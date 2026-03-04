@@ -12,6 +12,8 @@ public func configure(_ app: Application) async throws {
 
     app.migrations.add(CreateTodo())
 
+    app.migrations.add(CreateWevoProposeTables())
+
     // register routes
     try routes(app)
 }
