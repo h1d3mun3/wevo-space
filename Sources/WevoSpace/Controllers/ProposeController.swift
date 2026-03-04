@@ -34,16 +34,26 @@ struct ProposeController: RouteCollection {
         return .created
     }
 
-    // 2. 署名追記ロジック
+    // POST /proposes/:proposeID/sign
     func sign(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(SignInput.self)
 
-        // URLパラメータから親のIDを取得
+        // 1. URLからUUIDを取得
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest)
+            throw Abort(.badRequest, reason: "Invalid Propose ID.")
         }
 
-        let additionalSignature = Signature(proposeID: proposeID, publicKey: input.publicKey, signatureData: input.signature)
+        // 2. 親（Propose）が本当に存在するかチェック
+        guard let parentPropose = try await Propose.find(proposeID, on: req.db) else {
+            throw Abort(.notFound, reason: "Propose not found.")
+        }
+
+        // 3. 署名を保存
+        let additionalSignature = Signature(
+            proposeID: parentPropose.id!,
+            publicKey: input.publicKey,
+            signatureData: input.signature
+        )
         try await additionalSignature.save(on: req.db)
 
         return .ok
