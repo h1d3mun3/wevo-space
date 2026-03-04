@@ -15,6 +15,9 @@ struct ProposeController: RouteCollection {
         // GET /proposes/:proposeID -> 指定したUUIDのPropose詳細を取得
         proposes.get(":proposeID", use: getOne)
 
+        // GET /proposes?publicKey=xxx&page=1&per=20
+        proposes.get(use: list)
+
         // POST /proposes -> 最初の提案を作成
         proposes.post(use: create)
 
@@ -77,5 +80,18 @@ struct ProposeController: RouteCollection {
         }
 
         return propose
+    }
+
+    func list(req: Request) async throws -> Page<Propose> { // 戻り値を Page<T> に
+        guard let publicKey = req.query[String.self, at: "publicKey"] else {
+            throw Abort(.badRequest, reason: "publicKeyを指定してね")
+        }
+
+        return try await Propose.query(on: req.db)
+            .join(Signature.self, on: \Propose.$id == \Signature.$propose.$id)
+            .filter(Signature.self, \.$publicKey == publicKey)
+            .with(\.$signatures)
+            .sort(\.$createdAt, .descending)
+            .paginate(for: req) // これが Page<Propose> を返してくれる
     }
 }
