@@ -12,6 +12,9 @@ struct ProposeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let proposes = routes.grouped("proposes")
 
+        // GET /proposes/:proposeID -> 指定したUUIDのPropose詳細を取得
+        proposes.get(":proposeID", use: getOne)
+
         // POST /proposes -> 最初の提案を作成
         proposes.post(use: create)
 
@@ -57,5 +60,22 @@ struct ProposeController: RouteCollection {
         try await additionalSignature.save(on: req.db)
 
         return .ok
+    }
+
+    func getOne(req: Request) async throws -> Propose {
+        // 1. URLからUUIDを取得
+        guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
+            throw Abort(.badRequest, reason: "UUIDの形式が正しくないよ")
+        }
+
+        // 2. DBから検索（署名リストも一緒に読み込む）
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$signatures) // ここで紐づく署名を全部持ってくる
+            .first() else {
+            throw Abort(.notFound, reason: "そのProposeは見つからなかったよ")
+        }
+
+        return propose
     }
 }
