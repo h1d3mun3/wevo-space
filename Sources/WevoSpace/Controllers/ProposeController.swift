@@ -7,6 +7,8 @@
 
 import Fluent
 import Vapor
+import Crypto
+import Foundation
 
 struct ProposeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
@@ -31,6 +33,13 @@ struct ProposeController: RouteCollection {
     func create(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(ProposeInput.self)
 
+        // 署名検証
+        try verifySignature(
+            publicKey: input.publicKey,
+            signature: input.signature,
+            message: input.payloadHash
+        )
+
         let newPropose = Propose(id: input.id, payloadHash: input.payloadHash)
         try await newPropose.save(on: req.db)
 
@@ -53,6 +62,13 @@ struct ProposeController: RouteCollection {
         guard let parentPropose = try await Propose.find(proposeID, on: req.db) else {
             throw Abort(.notFound, reason: "Propose not found.")
         }
+
+        // 2.5. 署名検証
+        try verifySignature(
+            publicKey: input.publicKey,
+            signature: input.signature,
+            message: parentPropose.payloadHash
+        )
 
         // 3. 署名を保存
         let additionalSignature = Signature(
@@ -93,5 +109,43 @@ struct ProposeController: RouteCollection {
             .with(\.$signatures)
             .sort(\.$createdAt, .descending)
             .paginate(for: req) // これが Page<Propose> を返してくれる
+    }
+
+    // 署名検証ヘルパー関数
+    private func verifySignature(publicKey: String, signature: String, message: String) throws {
+        // Base64デコード
+        guard let publicKeyData = Data(base64Encoded: publicKey) else {
+            throw Abort(.badRequest, reason: "公開鍵のBase64デコードに失敗しました")
+        }
+
+        guard let signatureData = Data(base64Encoded: signature) else {
+            throw Abort(.badRequest, reason: "署名のBase64デコードに失敗しました")
+        }
+
+        guard let messageData = message.data(using: .utf8) else {
+            throw Abort(.badRequest, reason: "メッセージのエンコードに失敗しました")
+        }
+
+        // P-256公開鍵を復元
+        let publicKeyObj: P256.Signing.PublicKey
+        do {
+            publicKeyObj = try P256.Signing.PublicKey(x963Representation: publicKeyData)
+        } catch {
+            throw Abort(.badRequest, reason: "公開鍵の形式が無効です: \(error.localizedDescription)")
+        }
+
+        // ECDSA署名を復元
+        let ecdsaSignature: P256.Signing.ECDSASignature
+        do {
+            ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signatureData)
+        } catch {
+            throw Abort(.badRequest, reason: "署名の形式が無効です: \(error.localizedDescription)")
+        }
+
+        // 署名検証
+        let isValid = publicKeyObj.isValidSignature(ecdsaSignature, for: messageData)
+        if !isValid {
+            throw Abort(.unauthorized, reason: "署名検証に失敗しました。公開鍵と署名が一致しません")
+        }
     }
 }
