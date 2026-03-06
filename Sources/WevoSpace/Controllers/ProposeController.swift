@@ -23,60 +23,106 @@ struct ProposeController: RouteCollection {
         // POST /proposes -> 最初の提案を作成
         proposes.post(use: create)
 
-        // POST /proposes/:proposeID/sign -> 2人目の署名を追記
-        proposes.group(":proposeID") { propose in
-            propose.post("sign", use: sign)
-        }
+        // PUT /proposes/:proposeID -> 署名を追加して更新（分散型対応）
+        proposes.put(":proposeID", use: updateWithSignatures)
     }
 
-    // 1. 新規作成ロジック
+    // 1. 新規作成ロジック（複数署名対応）
     func create(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(ProposeInput.self)
 
-        // 署名検証
-        try verifySignature(
-            publicKey: input.publicKey,
-            signature: input.signature,
-            message: input.payloadHash
-        )
+        // 署名が最低1つ必要
+        guard !input.signatures.isEmpty else {
+            throw Abort(.badRequest, reason: "最低1つの署名が必要です")
+        }
+
+        // 全署名を検証
+        for signatureInput in input.signatures {
+            try verifySignature(
+                publicKey: signatureInput.publicKey,
+                signature: signatureInput.signature,
+                message: input.payloadHash
+            )
+        }
 
         let newPropose = Propose(id: input.id, payloadHash: input.payloadHash)
         try await newPropose.save(on: req.db)
 
-        let firstSignature = Signature(proposeID: newPropose.id!, publicKey: input.publicKey, signatureData: input.signature)
-        try await firstSignature.save(on: req.db)
+        // 全署名を保存
+        for signatureInput in input.signatures {
+            let signature = Signature(
+                proposeID: newPropose.id!,
+                publicKey: signatureInput.publicKey,
+                signatureData: signatureInput.signature
+            )
+            try await signature.save(on: req.db)
+        }
 
         return .created
     }
 
-    // POST /proposes/:proposeID/sign
-    func sign(req: Request) async throws -> HTTPStatus {
-        let input = try req.content.decode(SignInput.self)
+    // PUT /proposes/:proposeID - 分散型システム用の署名追加更新
+    func updateWithSignatures(req: Request) async throws -> HTTPStatus {
+        let input = try req.content.decode(ProposeInput.self)
 
         // 1. URLからUUIDを取得
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
             throw Abort(.badRequest, reason: "Invalid Propose ID.")
         }
 
-        // 2. 親（Propose）が本当に存在するかチェック
-        guard let parentPropose = try await Propose.find(proposeID, on: req.db) else {
+        // 2. UUIDが一致しているか確認
+        guard proposeID == input.id else {
+            throw Abort(.badRequest, reason: "URLのIDとリクエストボディのIDが一致しません")
+        }
+
+        // 3. 既存のProposeを取得（署名も含む）
+        guard let existingPropose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$signatures)
+            .first() else {
             throw Abort(.notFound, reason: "Propose not found.")
         }
 
-        // 2.5. 署名検証
-        try verifySignature(
-            publicKey: input.publicKey,
-            signature: input.signature,
-            message: parentPropose.payloadHash
-        )
+        // 4. payloadHashの不変性チェック
+        guard existingPropose.payloadHash == input.payloadHash else {
+            throw Abort(.badRequest, reason: "payloadHashの変更は許可されません")
+        }
 
-        // 3. 署名を保存
-        let additionalSignature = Signature(
-            proposeID: parentPropose.id!,
-            publicKey: input.publicKey,
-            signatureData: input.signature
-        )
-        try await additionalSignature.save(on: req.db)
+        // 5. 既存の署名をマップ化
+        let existingSignatures = existingPropose.signatures.map { sig in
+            SignatureInput(publicKey: sig.publicKey, signature: sig.signatureData)
+        }
+
+        // 6. 既存署名が全て含まれているか検証
+        for existingSig in existingSignatures {
+            guard input.signatures.contains(existingSig) else {
+                throw Abort(.badRequest, reason: "既存の署名の削除や変更は許可されません")
+            }
+        }
+
+        // 7. 新しい署名のみを抽出
+        let newSignatures = input.signatures.filter { inputSig in
+            !existingSignatures.contains(inputSig)
+        }
+
+        // 8. 全ての新しい署名を検証
+        for signatureInput in newSignatures {
+            try verifySignature(
+                publicKey: signatureInput.publicKey,
+                signature: signatureInput.signature,
+                message: input.payloadHash
+            )
+        }
+
+        // 9. 新しい署名をDBに追加
+        for signatureInput in newSignatures {
+            let signature = Signature(
+                proposeID: existingPropose.id!,
+                publicKey: signatureInput.publicKey,
+                signatureData: signatureInput.signature
+            )
+            try await signature.save(on: req.db)
+        }
 
         return .ok
     }
