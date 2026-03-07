@@ -6,6 +6,12 @@
 
 ### 🔒 Security
 - **Rate Limiting**: 60 requests per minute per IP address
+- **Request Size Limiting**: Maximum 1MB per request
+- **Field Size Validation**: 
+  - Payload hash: 256 characters max
+  - Signatures per request: 1000 max
+  - Public key: 500 characters max
+  - Signature data: 500 characters max
 - **Cryptographic Signatures**: P-256 ECDSA signature verification
 - **Input Validation**: Comprehensive validation of all inputs
 - **Immutable Data**: Append-only architecture for proposals
@@ -49,9 +55,18 @@ swift test
 Rate limiting can be configured in `configure.swift`:
 
 ```swift
-// Default: 60 requests per 60 seconds (1 minute)
+// Rate Limiting: 60 requests per 60 seconds (1 minute)
 app.middleware.use(RateLimitMiddleware(maxRequests: 60, windowSeconds: 60))
+
+// Request size limit: 1MB
+app.routes.defaultMaxBodySize = "1mb"
 ```
+
+Field size limits are enforced in `ProposeController`:
+- `payloadHash`: 256 characters maximum
+- `signatures`: 1000 signatures per request maximum
+- `publicKey`: 500 characters maximum (Base64 encoded)
+- `signature`: 500 characters maximum (Base64 encoded)
 
 ## Architecture
 
@@ -63,7 +78,9 @@ app.middleware.use(RateLimitMiddleware(maxRequests: 60, windowSeconds: 60))
 1. All signatures are cryptographically verified using P-256 ECDSA
 2. Proposals are immutable - payload hash cannot be changed
 3. Signatures are append-only - cannot be deleted or modified
-4. Rate limiting prevents abuse and DoS attacks
+4. Rate limiting prevents abuse and DoS attacks (60 requests/minute)
+5. Request size limiting prevents memory exhaustion attacks (1MB max)
+6. Individual field size validation prevents malformed data
 
 ### See more
 

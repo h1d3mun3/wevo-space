@@ -310,4 +310,151 @@ struct ProposeControllerTests {
             })
         }
     }
+    
+    // MARK: - Input Size Validation Tests
+    
+    @Test("payloadHashが256文字を超えるとエラーになる")
+    func payloadHashTooLong() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let longPayloadHash = String(repeating: "a", count: 257) // 257文字
+            let (publicKey, signature, _) = try generateTestSignature(message: "test")
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: longPayloadHash,
+                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+    
+    @Test("署名が1000個を超えるとエラーになる")
+    func tooManySignatures() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let payloadHash = "test-payload-hash"
+            
+            // 1001個の署名を生成
+            var signatures: [SignatureInput] = []
+            for _ in 0...1000 {
+                let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
+                signatures.append(SignatureInput(publicKey: publicKey, signature: signature))
+            }
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: signatures
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+    
+    @Test("公開鍵が500文字を超えるとエラーになる")
+    func publicKeyTooLong() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let payloadHash = "test-payload-hash"
+            let longPublicKey = String(repeating: "a", count: 501) // 501文字
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: [SignatureInput(publicKey: longPublicKey, signature: "test")]
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+    
+    @Test("署名データが500文字を超えるとエラーになる")
+    func signatureTooLong() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let payloadHash = "test-payload-hash"
+            let (publicKey, _, _) = try generateTestSignature(message: payloadHash)
+            let longSignature = String(repeating: "a", count: 501) // 501文字
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: [SignatureInput(publicKey: publicKey, signature: longSignature)]
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+    
+    @Test("256文字のpayloadHashは許可される")
+    func payloadHashMaxLength() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let maxPayloadHash = String(repeating: "a", count: 256) // ちょうど256文字
+            let (publicKey, signature, _) = try generateTestSignature(message: maxPayloadHash)
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: maxPayloadHash,
+                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .created)
+            })
+        }
+    }
+    
+    @Test("1000個の署名は許可される")
+    func exactlyThousandSignatures() async throws {
+        try await withApp { app in
+            let proposeID = UUID()
+            let payloadHash = "test-payload-hash"
+            
+            // ちょうど1000個の署名を生成
+            var signatures: [SignatureInput] = []
+            for _ in 0..<1000 {
+                let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
+                signatures.append(SignatureInput(publicKey: publicKey, signature: signature))
+            }
+            
+            let input = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: signatures
+            )
+            
+            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .created)
+                
+                // 全ての署名が保存されたか確認
+                let savedSignatures = try await Signature.query(on: app.db)
+                    .filter(\.$propose.$id == proposeID)
+                    .all()
+                #expect(savedSignatures.count == 1000)
+            })
+        }
+    }
 }

@@ -31,6 +31,9 @@ struct ProposeController: RouteCollection {
     func create(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(ProposeInput.self)
 
+        // 入力サイズの検証
+        try validateInputSizes(input: input)
+
         // 署名が最低1つ必要
         guard !input.signatures.isEmpty else {
             throw Abort(.badRequest, reason: "最低1つの署名が必要です")
@@ -64,6 +67,9 @@ struct ProposeController: RouteCollection {
     // PUT /proposes/:proposeID - 分散型システム用の署名追加更新
     func updateWithSignatures(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(ProposeInput.self)
+
+        // 入力サイズの検証
+        try validateInputSizes(input: input)
 
         // 1. URLからUUIDを取得
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
@@ -192,6 +198,32 @@ struct ProposeController: RouteCollection {
         let isValid = publicKeyObj.isValidSignature(ecdsaSignature, for: messageData)
         if !isValid {
             throw Abort(.unauthorized, reason: "署名検証に失敗しました。公開鍵と署名が一致しません")
+        }
+    }
+    
+    // 入力サイズ検証ヘルパー関数
+    private func validateInputSizes(input: ProposeInput) throws {
+        // payloadHashの長さ制限（256文字まで）
+        guard input.payloadHash.count <= 256 else {
+            throw Abort(.badRequest, reason: "payloadHashは256文字以下である必要があります")
+        }
+        
+        // 署名数の上限（1000個まで）
+        guard input.signatures.count <= 1000 else {
+            throw Abort(.badRequest, reason: "署名は1000個以下である必要があります")
+        }
+        
+        // 各署名のフィールドサイズをチェック
+        for (index, sig) in input.signatures.enumerated() {
+            // 公開鍵の長さ制限（Base64エンコード後で500文字まで）
+            guard sig.publicKey.count <= 500 else {
+                throw Abort(.badRequest, reason: "署名[\(index)]の公開鍵が長すぎます（最大500文字）")
+            }
+            
+            // 署名データの長さ制限（Base64エンコード後で500文字まで）
+            guard sig.signature.count <= 500 else {
+                throw Abort(.badRequest, reason: "署名[\(index)]の署名データが長すぎます（最大500文字）")
+            }
         }
     }
 }
