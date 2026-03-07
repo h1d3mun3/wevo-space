@@ -1,12 +1,33 @@
-Packages
-.build
-xcuserdata
-*.xcodeproj
-DerivedData/
+# Xcode
 .DS_Store
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+.swiftpm/
+
+# Build artifacts
+.build/
+build/
+
+# SQLite database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 db.sqlite
-.swiftpm
+
+# Environment variables
 .env
-.env.*
-!.env.example
-default.profraw
+.env.local
+.env.production
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
