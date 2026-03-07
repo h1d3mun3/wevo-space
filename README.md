@@ -35,6 +35,47 @@ When rate limit is exceeded, the API returns:
 
 ## Getting Started
 
+### Prerequisites
+
+- Swift 6.0 or later
+- PostgreSQL 12+ (for production)
+- Docker & Docker Compose (optional, for local PostgreSQL)
+
+### Database Setup
+
+WevoSpace supports both SQLite (development) and PostgreSQL (production).
+
+#### Development (SQLite - Default)
+
+No setup required! The app uses SQLite by default:
+
+```bash
+swift run
+# Automatically creates db.sqlite
+```
+
+#### Production (PostgreSQL)
+
+See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for detailed instructions.
+
+Quick start with Docker:
+
+```bash
+# Start PostgreSQL
+docker-compose up -d postgres
+
+# Copy environment variables
+cp .env.example .env
+
+# Run migrations
+swift run WevoSpace migrate
+
+# Start server
+swift run
+```
+
+### Build and Run
+
 To build the project using the Swift Package Manager, run the following command in the terminal from the root of the project:
 ```bash
 swift build
@@ -52,6 +93,33 @@ swift test
 
 ## Configuration
 
+### Environment Variables
+
+Create a `.env` file from the example:
+
+```bash
+cp .env.example .env
+```
+
+Key configuration options:
+
+```bash
+# PostgreSQL (Production)
+DATABASE_URL=postgres://username:password@localhost:5432/wevospace
+
+# Or use individual variables
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USERNAME=vapor
+DATABASE_PASSWORD=password
+DATABASE_NAME=wevospace
+
+# Environment
+ENVIRONMENT=production  # or development
+```
+
+### Rate Limiting
+
 Rate limiting can be configured in `configure.swift`:
 
 ```swift
@@ -62,6 +130,8 @@ app.middleware.use(RateLimitMiddleware(maxRequests: 60, windowSeconds: 60))
 app.routes.defaultMaxBodySize = "1mb"
 ```
 
+### Field Size Limits
+
 Field size limits are enforced in `ProposeController`:
 - `payloadHash`: 256 characters maximum
 - `signatures`: 1000 signatures per request maximum
@@ -69,6 +139,17 @@ Field size limits are enforced in `ProposeController`:
 - `signature`: 500 characters maximum (Base64 encoded)
 
 ## Architecture
+
+### Database
+
+- **Development**: SQLite (automatic, no setup required)
+- **Production**: PostgreSQL (recommended)
+
+The application automatically selects the database based on environment:
+- SQLite: Used when no `DATABASE_URL` or production environment variables are set
+- PostgreSQL: Used when `DATABASE_URL` or PostgreSQL environment variables are configured
+
+See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for migration and setup instructions.
 
 ### Data Models
 - **Propose**: Contains payload hash and creation timestamp
