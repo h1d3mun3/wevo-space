@@ -9,6 +9,7 @@
 import VaporTesting
 import Testing
 import Fluent
+import FluentSQLiteDriver
 import Crypto
 
 @Suite("ProposeController Tests", .serialized)
@@ -16,8 +17,18 @@ struct ProposeControllerTests {
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
-            try await configure(app)
+            // テストごとにインメモリデータベースを使用
+            app.databases.use(.sqlite(.memory), as: .sqlite)
+            
+            // マイグレーションを登録
+            app.migrations.add(CreateWevoProposeTables())
+            
+            // マイグレーション実行
             try await app.autoMigrate()
+            
+            // routesを登録
+            try routes(app)
+            
             try await test(app)
             try await app.autoRevert()
         } catch {
@@ -54,8 +65,7 @@ struct ProposeControllerTests {
             let input = ProposeInput(
                 id: proposeID,
                 payloadHash: payloadHash,
-                publicKey: publicKey,
-                signature: signature
+                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
             try await app.testing().test(.POST, "proposes", beforeRequest: { req in
@@ -92,8 +102,7 @@ struct ProposeControllerTests {
             let input = ProposeInput(
                 id: proposeID,
                 payloadHash: payloadHash,
-                publicKey: publicKey,
-                signature: wrongSignature
+                signatures: [SignatureInput(publicKey: publicKey, signature: wrongSignature)]
             )
             
             try await app.testing().test(.POST, "proposes", beforeRequest: { req in
@@ -117,8 +126,7 @@ struct ProposeControllerTests {
             let input = ProposeInput(
                 id: proposeID,
                 payloadHash: payloadHash,
-                publicKey: "invalid-base64!!!",
-                signature: "invalid-signature!!!"
+                signatures: [SignatureInput(publicKey: "invalid-base64!!!", signature: "invalid-signature!!!")]
             )
             
             try await app.testing().test(.POST, "proposes", beforeRequest: { req in
@@ -147,10 +155,18 @@ struct ProposeControllerTests {
             
             // 2人目の署名を追加
             let (publicKey2, signature2, _) = try generateTestSignature(message: payloadHash)
-            let signInput = SignInput(publicKey: publicKey2, signature: signature2)
             
-            try await app.testing().test(.POST, "proposes/\(proposeID)/sign", beforeRequest: { req in
-                try req.content.encode(signInput)
+            let updateInput = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: [
+                    SignatureInput(publicKey: publicKey1, signature: signature1),
+                    SignatureInput(publicKey: publicKey2, signature: signature2)
+                ]
+            )
+            
+            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+                try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 
@@ -184,10 +200,18 @@ struct ProposeControllerTests {
             // 不正な署名で追加を試みる
             let (publicKey2, _, _) = try generateTestSignature(message: payloadHash)
             let (_, wrongSignature, _) = try generateTestSignature(message: "wrong-message")
-            let signInput = SignInput(publicKey: publicKey2, signature: wrongSignature)
             
-            try await app.testing().test(.POST, "proposes/\(proposeID)/sign", beforeRequest: { req in
-                try req.content.encode(signInput)
+            let updateInput = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: [
+                    SignatureInput(publicKey: publicKey1, signature: signature1),
+                    SignatureInput(publicKey: publicKey2, signature: wrongSignature)
+                ]
+            )
+            
+            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+                try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .unauthorized)
                 
@@ -208,10 +232,14 @@ struct ProposeControllerTests {
             let payloadHash = "test-payload-hash"
             let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
             
-            let signInput = SignInput(publicKey: publicKey, signature: signature)
+            let updateInput = ProposeInput(
+                id: nonExistentID,
+                payloadHash: payloadHash,
+                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
+            )
             
-            try await app.testing().test(.POST, "proposes/\(nonExistentID)/sign", beforeRequest: { req in
-                try req.content.encode(signInput)
+            try await app.testing().test(.PUT, "proposes/\(nonExistentID)", beforeRequest: { req in
+                try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .notFound)
             })
@@ -224,10 +252,14 @@ struct ProposeControllerTests {
             let payloadHash = "test-payload-hash"
             let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
             
-            let signInput = SignInput(publicKey: publicKey, signature: signature)
+            let updateInput = ProposeInput(
+                id: UUID(), // 一応有効なUUIDを使用
+                payloadHash: payloadHash,
+                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
+            )
             
-            try await app.testing().test(.POST, "proposes/invalid-uuid/sign", beforeRequest: { req in
-                try req.content.encode(signInput)
+            try await app.testing().test(.PUT, "proposes/invalid-uuid", beforeRequest: { req in
+                try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
             })
@@ -253,10 +285,17 @@ struct ProposeControllerTests {
             let signature2 = try privateKey.signature(for: messageData)
             let signatureBase64_2 = signature2.derRepresentation.base64EncodedString()
             
-            let signInput = SignInput(publicKey: publicKey, signature: signatureBase64_2)
+            let updateInput = ProposeInput(
+                id: proposeID,
+                payloadHash: payloadHash,
+                signatures: [
+                    SignatureInput(publicKey: publicKey, signature: signature),
+                    SignatureInput(publicKey: publicKey, signature: signatureBase64_2)
+                ]
+            )
             
-            try await app.testing().test(.POST, "proposes/\(proposeID)/sign", beforeRequest: { req in
-                try req.content.encode(signInput)
+            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+                try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 
