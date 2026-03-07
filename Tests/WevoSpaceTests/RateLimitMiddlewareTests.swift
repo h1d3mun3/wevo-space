@@ -13,14 +13,17 @@ import FluentSQLiteDriver
 
 @Suite("RateLimitMiddleware Tests", .serialized)
 struct RateLimitMiddlewareTests {
+    // エラーレスポンスのデコード用構造体
+    private struct ErrorResponse: Codable {
+        let error: Bool
+        let reason: String
+    }
+    
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
             // テストごとにインメモリデータベースを使用
             app.databases.use(.sqlite(.memory), as: .sqlite)
-            
-            // Rate Limitingを適用（テスト用: 5リクエスト/10秒）
-            app.middleware.use(RateLimitMiddleware(maxRequests: 5, windowSeconds: 10))
             
             // マイグレーションを登録
             app.migrations.add(CreateWevoProposeTables())
@@ -28,8 +31,22 @@ struct RateLimitMiddlewareTests {
             // マイグレーション実行
             try await app.autoMigrate()
             
-            // routesを登録
-            try routes(app)
+            // Rate Limitingを適用（テスト用: 5リクエスト/10秒）
+            let rateLimiter = RateLimitMiddleware(maxRequests: 5, windowSeconds: 10)
+            
+            // ルートを定義（Rate Limitミドルウェア付き）
+            let limited = app.grouped(rateLimiter)
+            
+            limited.get { req async in
+                "It works!"
+            }
+            
+            limited.get("hello") { req async -> String in
+                "Hello, world!"
+            }
+            
+            // ProposeControllerは個別に登録
+            try limited.register(collection: ProposeController())
             
             try await test(app)
             try await app.autoRevert()
@@ -51,10 +68,10 @@ struct RateLimitMiddlewareTests {
                     
                     // Rate Limitヘッダーの確認
                     let limit = res.headers.first(name: "X-RateLimit-Limit")
-                    #expect(limit == "5", "X-RateLimit-Limit が正しく設定されている")
+                    #expect(limit == "5", "X-RateLimit-Limit が正しく設定されている: \(limit ?? "nil")")
                     
                     let remaining = res.headers.first(name: "X-RateLimit-Remaining")
-                    #expect(remaining != nil, "X-RateLimit-Remaining が存在する")
+                    #expect(remaining != nil, "X-RateLimit-Remaining が存在する: \(remaining ?? "nil")")
                 })
             }
         }
@@ -85,8 +102,9 @@ struct RateLimitMiddlewareTests {
                 #expect(retryAfter != nil, "Retry-After ヘッダーが存在する")
                 
                 // レスポンスボディの確認
-                let errorResponse = try res.content.decode([String: String].self)
-                #expect(errorResponse["reason"] != nil, "エラーメッセージが含まれている")
+                let errorResponse = try res.content.decode(ErrorResponse.self)
+                #expect(errorResponse.error == true, "error フィールドが true")
+                #expect(errorResponse.reason.isEmpty == false, "エラーメッセージが含まれている")
             })
         }
     }

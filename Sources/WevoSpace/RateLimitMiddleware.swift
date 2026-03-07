@@ -73,12 +73,8 @@ final class RateLimitMiddleware: AsyncMiddleware {
     }
     
     func respond(to request: Request, chainingTo next: AsyncResponder) async throws -> Response {
-        // クライアントのIPアドレスを取得
-        guard let clientIP = getClientIP(from: request) else {
-            request.logger.warning("クライアントIPを取得できませんでした")
-            // IPが取得できない場合は通過させる（開発環境対応）
-            return try await next.respond(to: request)
-        }
+        // クライアントのIPアドレスを取得（取得できない場合はデフォルトIPを使用）
+        let clientIP = getClientIP(from: request) ?? "127.0.0.1"
         
         // Rate Limitチェック
         let (allowed, remaining, resetTime) = checkRateLimit(for: clientIP)
