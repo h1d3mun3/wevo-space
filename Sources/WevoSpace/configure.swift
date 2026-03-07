@@ -41,16 +41,8 @@ private func configureDatabase(_ app: Application) throws {
 
 // DATABASE_URL環境変数からPostgreSQL接続設定を解析
 private func configureDatabaseURL(_ app: Application, url: String) throws {
-    guard var postgresConfig = try? PostgresConfiguration(url: url) else {
+    guard let postgresConfig = try? PostgresConfiguration(url: url) else {
         throw Abort(.internalServerError, reason: "Invalid DATABASE_URL format")
-    }
-
-    // TLS設定（Heroku、Fly.io等のクラウドプロバイダー対応）
-    // 本番環境では自己署名証明書を許可
-    if app.environment == .production {
-        var tlsConfig = TLSConfiguration.makeClientConfiguration()
-        tlsConfig.certificateVerification = .none
-        postgresConfig.tlsConfiguration = tlsConfig
     }
 
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
@@ -65,20 +57,13 @@ private func configurePostgreSQL(_ app: Application) throws {
     let password = Environment.get("DATABASE_PASSWORD") ?? ""
     let database = Environment.get("DATABASE_NAME") ?? "wevospace"
 
-    var postgresConfig = PostgresConfiguration(
+    let postgresConfig = PostgresConfiguration(
         hostname: hostname,
         port: port,
         username: username,
         password: password,
         database: database
     )
-
-    // TLS設定（本番環境では自己署名証明書を許可）
-    if app.environment == .production {
-        var tlsConfig = TLSConfiguration.makeClientConfiguration()
-        tlsConfig.certificateVerification = .none
-        postgresConfig.tlsConfiguration = tlsConfig
-    }
 
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
     app.logger.info("Using PostgreSQL database: \(hostname):\(port)/\(database)")

@@ -143,73 +143,6 @@ databases:
 
 ---
 
-### Fly.io
-
-#### 1. Fly CLI インストール
-
-```bash
-curl -L https://fly.io/install.sh | sh
-fly auth login
-```
-
-#### 2. fly.toml 作成
-
-```bash
-fly launch
-```
-
-生成された `fly.toml` を編集：
-
-```toml
-app = "wevospace"
-primary_region = "nrt"  # Tokyo
-
-[build]
-  [build.args]
-    SWIFT_VERSION = "6.0"
-
-[env]
-  ENVIRONMENT = "production"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = true
-  auto_start_machines = true
-  min_machines_running = 0
-
-[[vm]]
-  cpu_kind = "shared"
-  cpus = 1
-  memory_mb = 512
-```
-
-#### 3. PostgreSQL追加
-
-```bash
-# PostgreSQLクラスター作成
-fly postgres create --name wevospace-db
-
-# アプリに接続
-fly postgres attach wevospace-db
-```
-
-#### 4. デプロイ
-
-```bash
-# デプロイ
-fly deploy
-
-# マイグレーション
-fly ssh console
-./WevoSpace migrate --env production
-
-# ログ確認
-fly logs
-```
-
----
-
 ## VPS / 専用サーバー
 
 ### Ubuntu 22.04 での手動セットアップ
@@ -327,18 +260,22 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-#### 6. Let's Encrypt SSL証明書
+#### 6. SSL証明書の設定（オプション）
+
+HTTPSを使用する場合は、Let's Encryptで無料SSL証明書を取得できます：
 
 ```bash
 # Certbot インストール
 sudo apt install certbot python3-certbot-nginx
 
-# SSL証明書取得
+# SSL証明書取得（ドメインがある場合）
 sudo certbot --nginx -d api.yourdomain.com
 
 # 自動更新設定（既に有効）
 sudo systemctl status certbot.timer
 ```
+
+**Note**: IPアドレスでの運用の場合、SSL証明書は不要です。HTTPで稼働します。
 
 ---
 
@@ -515,11 +452,13 @@ SELECT pg_reload_conf();
 ### 本番環境
 
 1. ✅ 強力なデータベースパスワード
-2. ✅ HTTPS必須（Let's Encrypt推奨）
+2. ⚠️ HTTPS推奨（ドメインがある場合）
 3. ✅ ファイアウォール設定（UFW等）
 4. ✅ 定期的なセキュリティアップデート
 5. ✅ 監視・アラート設定
 6. ✅ バックアップの自動化
+
+**Note**: IPアドレスでの運用の場合、HTTPで問題ありません。将来的にドメインを取得した際にHTTPSへ移行することを推奨します。
 
 ### 環境変数
 
