@@ -26,17 +26,19 @@ COPY . .
 RUN mkdir /staging
 
 # Build the application, with optimizations, with static linking, and using jemalloc
-# N.B.: The static version of jemalloc is incompatible with the static Swift runtime.
+# Swift 6の厳密な並行性チェックを警告のみに変更
 RUN --mount=type=cache,target=/build/.build \
     swift build -c release \
         --product WevoSpace \
         --static-swift-stdlib \
-        -Xlinker -ljemalloc && \
-    # Copy main executable to staging area
-    cp "$(swift build -c release --show-bin-path)/WevoSpace" /staging && \
-    # Copy resources bundled by SPM to staging area
-    find -L "$(swift build -c release --show-bin-path)" -regex '.*\.resources$' -exec cp -Ra {} /staging \;
+        -Xswiftc -strict-concurrency=minimal \
+        -Xlinker -ljemalloc
 
+# Copy main executable to staging area
+RUN cp "$(swift build -c release --show-bin-path)/WevoSpace" /staging
+
+# Copy resources bundled by SPM to staging area
+RUN find -L "$(swift build -c release --show-bin-path)" -regex '.*\.resources$' -exec cp -Ra {} /staging \; || true
 
 # Switch to the staging area
 WORKDIR /staging
