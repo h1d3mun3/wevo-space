@@ -13,7 +13,7 @@ public func configure(_ app: Application) async throws {
     app.routes.defaultMaxBodySize = "1mb"
 
     // Rate Limiting: 1分間に60リクエストまで
-    app.middleware.use(RateLimitMiddleware(maxRequests: 60, windowSeconds: 60))
+    app.middleware.use(RateLimitMiddleware(requestLimit: 60, timeWindow: 60))
 
     // データベース設定
     try configureDatabase(app)

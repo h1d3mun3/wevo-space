@@ -32,7 +32,7 @@ struct RateLimitMiddlewareTests {
             try await app.autoMigrate()
             
             // Rate Limitingを適用（テスト用: 5リクエスト/10秒）
-            let rateLimiter = RateLimitMiddleware(maxRequests: 5, windowSeconds: 10)
+            let rateLimiter = RateLimitMiddleware(requestLimit: 5, timeWindow: 10)
             
             // ルートを定義（Rate Limitミドルウェア付き）
             let limited = app.grouped(rateLimiter)
