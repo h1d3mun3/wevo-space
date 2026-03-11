@@ -1,0 +1,227 @@
+openapi: 3.0.0
+info:
+  title: WevoSpace Propose API
+  description: |
+    Proposeの作成と署名管理API。
+    複数の暗号署名によって承認されたメッセージ（Propose）を管理します。
+  version: 1.0.0
+  contact:
+    name: WevoSpace Team
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://api.wevoSpace.example.com
+    description: Production server
+
+paths:
+  /proposes:
+    post:
+      summary: 新しいProposeを作成
+      description: |
+        ペイロードハッシュと初期署名を含む新しいProposeを作成します。
+        提供された署名が有効であることが確認されます。
+      tags:
+        - Propose
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeInput'
+            examples:
+              valid:
+                summary: 有効なProposeの例
+                value:
+                  id: "550e8400-e29b-41d4-a716-446655440000"
+                  payloadHash: "abc123def456"
+                  signatures:
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD1234567890..."
+      responses:
+        '201':
+          description: Propose作成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  payloadHash:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: |
+            リクエストが無効です。以下の理由が考えられます：
+            - payloadHashが256文字を超えている
+            - signatures配列が1000個を超えている
+            - publicKeyが500文字を超えている
+            - signatureが500文字を超えている
+            - publicKeyが有効なBase64形式ではない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                payloadHashTooLong:
+                  summary: payloadHash超過エラー
+                  value:
+                    error: "payloadHash must be 256 characters or less"
+                tooManySignatures:
+                  summary: 署名数超過エラー
+                  value:
+                    error: "signatures must be 1000 or fewer"
+                invalidBase64:
+                  summary: Base64形式エラー
+                  value:
+                    error: "publicKey must be valid Base64 encoded"
+        '401':
+          description: |
+            署名検証に失敗しました。
+            提供された署名がpayloadHashに対して有効ではありません。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid signature for given payload hash"
+
+  /proposes/{id}:
+    put:
+      summary: 既存のProposeに署名を追加
+      description: |
+        既存のProposeに新しい署名を追加します。
+        すべての署名（既存と新規）が有効であることが確認されます。
+      tags:
+        - Propose
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Propose ID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeInput'
+            examples:
+              addSignature:
+                summary: 署名を追加する例
+                value:
+                  id: "550e8400-e29b-41d4-a716-446655440000"
+                  payloadHash: "abc123def456"
+                  signatures:
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD1234567890..."
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD0987654321..."
+      responses:
+        '200':
+          description: 署名追加成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  payloadHash:
+                    type: string
+                  signatureCount:
+                    type: integer
+                  updatedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: |
+            リクエストが無効です。以下の理由が考えられます：
+            - 無効なUUID形式でアクセスした
+            - payloadHashが256文字を超えている
+            - signatures配列が1000個を超えている
+            - publicKeyが500文字を超えている
+            - signatureが500文字を超えている
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid UUID format"
+        '401':
+          description: |
+            署名検証に失敗しました。
+            提供されたいずれかの署名がpayloadHashに対して無効です。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 指定されたIDのProposeが見つかりません
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Propose not found"
+
+components:
+  schemas:
+    ProposeInput:
+      type: object
+      required:
+        - id
+        - payloadHash
+        - signatures
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Propose ID (クライアント生成)
+        payloadHash:
+          type: string
+          maxLength: 256
+          description: ペイロードのハッシュ値（SHA256など）
+        signatures:
+          type: array
+          maxItems: 1000
+          minItems: 1
+          description: このProposeに対する署名の配列
+          items:
+            $ref: '#/components/schemas/SignatureInput'
+
+    SignatureInput:
+      type: object
+      required:
+        - publicKey
+        - signature
+      properties:
+        publicKey:
+          type: string
+          maxLength: 500
+          description: Base64エンコードされた公開鍵（P256 X.963形式）
+        signature:
+          type: string
+          maxLength: 500
+          description: Base64エンコードされたDER形式の署名
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: エラーメッセージ
+        details:
+          type: object
+          description: エラーの詳細情報（オプション）
+
+tags:
+  - name: Propose
+    description: Proposeの作成と署名管理

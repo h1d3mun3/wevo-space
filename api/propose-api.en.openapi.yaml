@@ -1,0 +1,227 @@
+openapi: 3.0.0
+info:
+  title: WevoSpace Propose API
+  description: |
+    API for managing Proposes and their cryptographic signatures.
+    A Propose is a message that can be approved by multiple cryptographic signatures.
+  version: 1.0.0
+  contact:
+    name: WevoSpace Team
+
+servers:
+  - url: http://localhost:8080
+    description: Development server
+  - url: https://api.wevoSpace.example.com
+    description: Production server
+
+paths:
+  /proposes:
+    post:
+      summary: Create a new Propose
+      description: |
+        Creates a new Propose with a payload hash and initial signatures.
+        The provided signatures are verified for validity.
+      tags:
+        - Propose
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeInput'
+            examples:
+              valid:
+                summary: Example of a valid Propose
+                value:
+                  id: "550e8400-e29b-41d4-a716-446655440000"
+                  payloadHash: "abc123def456"
+                  signatures:
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD1234567890..."
+      responses:
+        '201':
+          description: Propose created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  payloadHash:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+            - payloadHash exceeds 256 characters
+            - signatures array exceeds 1000 items
+            - publicKey exceeds 500 characters
+            - signature exceeds 500 characters
+            - publicKey is not valid Base64 format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                payloadHashTooLong:
+                  summary: Payload hash exceeds limit
+                  value:
+                    error: "payloadHash must be 256 characters or less"
+                tooManySignatures:
+                  summary: Too many signatures
+                  value:
+                    error: "signatures must be 1000 or fewer"
+                invalidBase64:
+                  summary: Invalid Base64 format
+                  value:
+                    error: "publicKey must be valid Base64 encoded"
+        '401':
+          description: |
+            Signature verification failed.
+            The provided signature is not valid for the given payload hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid signature for given payload hash"
+
+  /proposes/{id}:
+    put:
+      summary: Add signatures to an existing Propose
+      description: |
+        Adds new signatures to an existing Propose.
+        All signatures (both existing and new) are verified for validity.
+      tags:
+        - Propose
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Propose ID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeInput'
+            examples:
+              addSignature:
+                summary: Example of adding a signature
+                value:
+                  id: "550e8400-e29b-41d4-a716-446655440000"
+                  payloadHash: "abc123def456"
+                  signatures:
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD1234567890..."
+                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
+                      signature: "MEUCIQD0987654321..."
+      responses:
+        '200':
+          description: Signature added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  payloadHash:
+                    type: string
+                  signatureCount:
+                    type: integer
+                  updatedAt:
+                    type: string
+                    format: date-time
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+            - Invalid UUID format in path
+            - payloadHash exceeds 256 characters
+            - signatures array exceeds 1000 items
+            - publicKey exceeds 500 characters
+            - signature exceeds 500 characters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid UUID format"
+        '401':
+          description: |
+            Signature verification failed.
+            One or more of the provided signatures is not valid for the given payload hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Propose with the specified ID not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Propose not found"
+
+components:
+  schemas:
+    ProposeInput:
+      type: object
+      required:
+        - id
+        - payloadHash
+        - signatures
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Propose ID (generated by client)
+        payloadHash:
+          type: string
+          maxLength: 256
+          description: Hash value of the payload (e.g., SHA256)
+        signatures:
+          type: array
+          maxItems: 1000
+          minItems: 1
+          description: Array of signatures for this Propose
+          items:
+            $ref: '#/components/schemas/SignatureInput'
+
+    SignatureInput:
+      type: object
+      required:
+        - publicKey
+        - signature
+      properties:
+        publicKey:
+          type: string
+          maxLength: 500
+          description: Base64-encoded public key (P256 X.963 format)
+        signature:
+          type: string
+          maxLength: 500
+          description: Base64-encoded DER format signature
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+        details:
+          type: object
+          description: Additional error details (optional)
+
+tags:
+  - name: Propose
+    description: Create and manage Proposes and signatures
