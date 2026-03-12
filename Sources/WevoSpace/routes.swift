@@ -1,15 +1,19 @@
 import Fluent
 import Vapor
 
-func routes(_ app: Application) throws {
-    app.get { req async in
-        "It works!"
-    }
+struct InfoResponse: Content {
+    let protocolName: String
+    let version: String
+    let capabilities: [String]
 
-    app.get("hello") { req async -> String in
-        "Hello, world!"
+    enum CodingKeys: String, CodingKey {
+        case protocolName = "protocol"
+        case version
+        case capabilities
     }
-    
+}
+
+func routes(_ app: Application) throws {
     // ヘルスチェックエンドポイント（監視用）
     app.get("health") { req async -> [String: String] in
         return [
@@ -18,5 +22,20 @@ func routes(_ app: Application) throws {
         ]
     }
 
-    try app.register(collection: ProposeController())
+    // サーバー情報・ケイパビリティ（永久不変）
+    app.get("info") { req async -> InfoResponse in
+        return InfoResponse(
+            protocolName: "wevo",
+            version: "0.1.0",
+            capabilities: [
+                "proposes.create",
+                "proposes.read",
+                "proposes.sign"
+            ]
+        )
+    }
+
+    // v1 API
+    let v1 = app.grouped("v1")
+    try v1.register(collection: ProposeController())
 }

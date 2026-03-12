@@ -68,11 +68,11 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created)
-                
+
                 // DBに保存されたか確認
                 let propose = try await Propose.find(proposeID, on: app.db)
                 #expect(propose != nil)
@@ -105,7 +105,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: wrongSignature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .unauthorized)
@@ -129,7 +129,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: "invalid-base64!!!", signature: "invalid-signature!!!")]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -165,7 +165,7 @@ struct ProposeControllerTests {
                 ]
             )
             
-            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
                 try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
@@ -210,7 +210,7 @@ struct ProposeControllerTests {
                 ]
             )
             
-            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
                 try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .unauthorized)
@@ -238,7 +238,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.PUT, "proposes/\(nonExistentID)", beforeRequest: { req in
+            try await app.testing().test(.PUT, "v1/proposes/\(nonExistentID)", beforeRequest: { req in
                 try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .notFound)
@@ -258,7 +258,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.PUT, "proposes/invalid-uuid", beforeRequest: { req in
+            try await app.testing().test(.PUT, "v1/proposes/invalid-uuid", beforeRequest: { req in
                 try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -294,7 +294,7 @@ struct ProposeControllerTests {
                 ]
             )
             
-            try await app.testing().test(.PUT, "proposes/\(proposeID)", beforeRequest: { req in
+            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
                 try req.content.encode(updateInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
@@ -326,7 +326,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -353,7 +353,7 @@ struct ProposeControllerTests {
                 signatures: signatures
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -374,7 +374,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: longPublicKey, signature: "test")]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -396,7 +396,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: longSignature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
@@ -417,7 +417,7 @@ struct ProposeControllerTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created)
@@ -444,7 +444,7 @@ struct ProposeControllerTests {
                 signatures: signatures
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created)
