@@ -27,7 +27,8 @@ RUN mkdir /staging
 
 # Build the application, with optimizations, with static linking, and using jemalloc
 # N.B.: The static version of jemalloc is incompatible with the static Swift runtime.
-RUN --mount=type=cache,target=/build/.build \
+ARG TARGETARCH
+RUN --mount=type=cache,target=/build/.build,id=wevo-space-$TARGETARCH \
     swift build -c release \
         --product WevoSpace \
         --static-swift-stdlib \
