@@ -13,6 +13,7 @@ struct RequestSizeLimitTests {
             app.databases.use(.sqlite(.memory), as: .sqlite)
             app.routes.defaultMaxBodySize = "1mb"
             app.migrations.add(CreateProposesTable())
+            app.migrations.add(CreateCounterpartiesTable())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
@@ -30,7 +31,7 @@ struct RequestSizeLimitTests {
         contentHash: String = "test-hash",
         creatorPublicKey: String? = nil,
         creatorSignature: String = "dummy-sig",
-        counterpartyPublicKey: String = "counterparty-key",
+        counterpartyPublicKeys: [String] = ["counterparty-key"],
         createdAt: String = "2026-01-01T00:00:00Z"
     ) -> CreateProposeInput {
         let pubKey: String
@@ -45,7 +46,7 @@ struct RequestSizeLimitTests {
             contentHash: contentHash,
             creatorPublicKey: pubKey,
             creatorSignature: creatorSignature,
-            counterpartyPublicKey: counterpartyPublicKey,
+            counterpartyPublicKeys: counterpartyPublicKeys,
             createdAt: createdAt
         )
     }
@@ -69,7 +70,7 @@ struct RequestSizeLimitTests {
                 contentHash: contentHash,
                 creatorPublicKey: creatorPubKey,
                 creatorSignature: sig.derRepresentation.base64EncodedString(),
-                counterpartyPublicKey: counterpartyPubKey,
+                counterpartyPublicKeys: [counterpartyPubKey],
                 createdAt: createdAt
             )
 

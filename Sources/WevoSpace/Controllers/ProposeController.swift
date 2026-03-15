@@ -3,6 +3,47 @@ import Vapor
 import Crypto
 import Foundation
 
+// Response DTO including counterparty details
+struct ProposeResponse: Content {
+    let id: UUID
+    let contentHash: String
+    let creatorPublicKey: String
+    let creatorSignature: String
+    let counterparties: [CounterpartyInfo]
+    let honorCreatorSignature: String?
+    let partCreatorSignature: String?
+    let status: String
+    let createdAt: String
+    let updatedAt: Date?
+
+    struct CounterpartyInfo: Content {
+        let publicKey: String
+        let signSignature: String?
+        let honorSignature: String?
+        let partSignature: String?
+    }
+
+    init(from propose: Propose) throws {
+        self.id = try propose.requireID()
+        self.contentHash = propose.contentHash
+        self.creatorPublicKey = propose.creatorPublicKey
+        self.creatorSignature = propose.creatorSignature
+        self.counterparties = propose.counterparties.map {
+            CounterpartyInfo(
+                publicKey: $0.publicKey,
+                signSignature: $0.signSignature,
+                honorSignature: $0.honorSignature,
+                partSignature: $0.partSignature
+            )
+        }
+        self.honorCreatorSignature = propose.honorCreatorSignature
+        self.partCreatorSignature = propose.partCreatorSignature
+        self.status = propose.status
+        self.createdAt = propose.createdAt
+        self.updatedAt = propose.updatedAt
+    }
+}
+
 struct ProposeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let proposes = routes.grouped("proposes")
@@ -16,16 +57,27 @@ struct ProposeController: RouteCollection {
     }
 
     // GET /v1/proposes?publicKey=...&status=proposed,signed
-    func list(req: Request) async throws -> Page<Propose> {
+    func list(req: Request) async throws -> Page<ProposeResponse> {
         guard let publicKey = req.query[String.self, at: "publicKey"] else {
             throw Abort(.badRequest, reason: "publicKeyを指定してください")
         }
 
-        var query = Propose.query(on: req.db)
-            .group(.or) { group in
+        // Find propose IDs where publicKey is registered as a counterparty
+        let counterpartyProposeIDs = try await ProposeCounterparty.query(on: req.db)
+            .filter(\.$publicKey == publicKey)
+            .all()
+            .map { $0.$propose.id }
+
+        var query = Propose.query(on: req.db).with(\.$counterparties)
+
+        if counterpartyProposeIDs.isEmpty {
+            query = query.filter(\.$creatorPublicKey == publicKey)
+        } else {
+            query = query.group(.or) { group in
                 group.filter(\.$creatorPublicKey == publicKey)
-                group.filter(\.$counterpartyPublicKey == publicKey)
+                group.filter(\.$id ~~ counterpartyProposeIDs)
             }
+        }
 
         if let statusParam = req.query[String.self, at: "status"] {
             let statuses = statusParam
@@ -37,9 +89,12 @@ struct ProposeController: RouteCollection {
             }
         }
 
-        return try await query
+        let page = try await query
             .sort(\.$updatedAt, .descending)
             .paginate(for: req)
+
+        let items = try page.items.map { try ProposeResponse(from: $0) }
+        return Page(items: items, metadata: page.metadata)
     }
 
     // POST /v1/proposes
@@ -50,13 +105,19 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "proposeIdの形式が無効です")
         }
 
+        guard !input.counterpartyPublicKeys.isEmpty else {
+            throw Abort(.badRequest, reason: "counterpartyPublicKeysは1件以上必要です")
+        }
+
         // Duplicate check
         if try await Propose.find(proposeId, on: req.db) != nil {
             throw Abort(.conflict, reason: "同じIDのProposeが既に存在します")
         }
 
-        // Signature verification: proposeId + contentHash + counterpartyPublicKey + createdAt
-        let message = input.proposeId + input.contentHash + input.counterpartyPublicKey + input.createdAt
+        // Signature verification:
+        // proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt
+        let sortedKeys = input.counterpartyPublicKeys.sorted().joined()
+        let message = input.proposeId + input.contentHash + sortedKeys + input.createdAt
         try verifySignature(publicKey: input.creatorPublicKey, signature: input.creatorSignature, message: message)
 
         let propose = Propose(
@@ -64,29 +125,36 @@ struct ProposeController: RouteCollection {
             contentHash: input.contentHash,
             creatorPublicKey: input.creatorPublicKey,
             creatorSignature: input.creatorSignature,
-            counterpartyPublicKey: input.counterpartyPublicKey,
             createdAt: input.createdAt
         )
         try await propose.save(on: req.db)
+
+        for publicKey in input.counterpartyPublicKeys {
+            let counterparty = ProposeCounterparty(proposeID: proposeId, publicKey: publicKey)
+            try await counterparty.save(on: req.db)
+        }
 
         return .created
     }
 
     // GET /v1/proposes/:id
-    func getOne(req: Request) async throws -> Propose {
+    func getOne(req: Request) async throws -> ProposeResponse {
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
             throw Abort(.badRequest, reason: "無効なPropose IDです")
         }
 
-        guard let propose = try await Propose.find(proposeID, on: req.db) else {
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
             throw Abort(.notFound, reason: "Proposeが見つかりません")
         }
 
-        return propose
+        return try ProposeResponse(from: propose)
     }
 
     // PATCH /v1/proposes/:id/sign
-    // proposed → signed
+    // proposed → signed (auto-transitions when all counterparties have signed)
     func sign(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(SignInput.self)
 
@@ -94,7 +162,10 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "無効なPropose IDです")
         }
 
-        guard let propose = try await Propose.find(proposeID, on: req.db) else {
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
             throw Abort(.notFound, reason: "Proposeが見つかりません")
         }
 
@@ -102,17 +173,26 @@ struct ProposeController: RouteCollection {
             throw Abort(.conflict, reason: "proposed状態のProposeのみ署名できます（現在: \(propose.status)）")
         }
 
+        guard let counterparty = propose.counterparties.first(where: { $0.publicKey == input.signerPublicKey }) else {
+            throw Abort(.forbidden, reason: "このProposeのcounterpartyではありません")
+        }
+
         guard input.createdAt == propose.createdAt else {
             throw Abort(.badRequest, reason: "createdAtがProposeの値と一致しません")
         }
 
-        // Signature verification: proposeId + contentHash + counterpartyPublicKey + createdAt
-        let message = propose.id!.uuidString + propose.contentHash + propose.counterpartyPublicKey + propose.createdAt
-        try verifySignature(publicKey: propose.counterpartyPublicKey, signature: input.counterpartySignature, message: message)
+        // Signature verification: proposeId + contentHash + signerPublicKey + createdAt
+        let message = propose.id!.uuidString + propose.contentHash + input.signerPublicKey + propose.createdAt
+        try verifySignature(publicKey: input.signerPublicKey, signature: input.signature, message: message)
 
-        propose.counterpartySignature = input.counterpartySignature
-        propose.proposeStatus = .signed
-        try await propose.save(on: req.db)
+        counterparty.signSignature = input.signature
+        try await counterparty.save(on: req.db)
+
+        // Auto-transition to signed when all counterparties have signed
+        if propose.counterparties.allSatisfy({ $0.signSignature != nil }) {
+            propose.proposeStatus = .signed
+            try await propose.save(on: req.db)
+        }
 
         return .ok
     }
@@ -126,7 +206,10 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "無効なPropose IDです")
         }
 
-        guard let propose = try await Propose.find(proposeID, on: req.db) else {
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
             throw Abort(.notFound, reason: "Proposeが見つかりません")
         }
 
@@ -134,7 +217,9 @@ struct ProposeController: RouteCollection {
             throw Abort(.conflict, reason: "proposed状態のProposeのみ解消できます（現在: \(propose.status)）")
         }
 
-        guard input.publicKey == propose.creatorPublicKey || input.publicKey == propose.counterpartyPublicKey else {
+        let isCreator = input.publicKey == propose.creatorPublicKey
+        let isCounterparty = propose.counterparties.contains { $0.publicKey == input.publicKey }
+        guard isCreator || isCounterparty else {
             throw Abort(.forbidden, reason: "このProposeの参加者のみが解消できます")
         }
 
@@ -149,7 +234,7 @@ struct ProposeController: RouteCollection {
     }
 
     // PATCH /v1/proposes/:id/honor
-    // signed → honored (auto-transitions when both signatures are present)
+    // signed → honored (auto-transitions when creator + all counterparties have signed)
     func honor(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(TransitionInput.self)
 
@@ -157,7 +242,10 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "無効なPropose IDです")
         }
 
-        guard let propose = try await Propose.find(proposeID, on: req.db) else {
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
             throw Abort(.notFound, reason: "Proposeが見つかりません")
         }
 
@@ -166,8 +254,8 @@ struct ProposeController: RouteCollection {
         }
 
         let isCreator = input.publicKey == propose.creatorPublicKey
-        let isCounterparty = input.publicKey == propose.counterpartyPublicKey
-        guard isCreator || isCounterparty else {
+        let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
+        guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "このProposeの参加者のみがhonorできます")
         }
 
@@ -175,24 +263,28 @@ struct ProposeController: RouteCollection {
         let message = "honored." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
+        let creatorHonored: Bool
         if isCreator {
             propose.honorCreatorSignature = input.signature
+            try await propose.save(on: req.db)
+            creatorHonored = true
         } else {
-            propose.honorCounterpartySignature = input.signature
+            counterparty!.honorSignature = input.signature
+            try await counterparty!.save(on: req.db)
+            creatorHonored = propose.honorCreatorSignature != nil
         }
 
-        // Auto-transition to honored when both signatures are present
-        if propose.honorCreatorSignature != nil && propose.honorCounterpartySignature != nil {
+        // Auto-transition to honored when all participants have signed
+        if creatorHonored && propose.counterparties.allSatisfy({ $0.honorSignature != nil }) {
             propose.proposeStatus = .honored
+            try await propose.save(on: req.db)
         }
-
-        try await propose.save(on: req.db)
 
         return .ok
     }
 
     // PATCH /v1/proposes/:id/part
-    // signed → parted (auto-transitions when both signatures are present)
+    // signed → parted (auto-transitions when creator + all counterparties have signed)
     func part(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(TransitionInput.self)
 
@@ -200,7 +292,10 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "無効なPropose IDです")
         }
 
-        guard let propose = try await Propose.find(proposeID, on: req.db) else {
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
             throw Abort(.notFound, reason: "Proposeが見つかりません")
         }
 
@@ -209,8 +304,8 @@ struct ProposeController: RouteCollection {
         }
 
         let isCreator = input.publicKey == propose.creatorPublicKey
-        let isCounterparty = input.publicKey == propose.counterpartyPublicKey
-        guard isCreator || isCounterparty else {
+        let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
+        guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "このProposeの参加者のみがpartできます")
         }
 
@@ -218,18 +313,22 @@ struct ProposeController: RouteCollection {
         let message = "parted." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
+        let creatorParted: Bool
         if isCreator {
             propose.partCreatorSignature = input.signature
+            try await propose.save(on: req.db)
+            creatorParted = true
         } else {
-            propose.partCounterpartySignature = input.signature
+            counterparty!.partSignature = input.signature
+            try await counterparty!.save(on: req.db)
+            creatorParted = propose.partCreatorSignature != nil
         }
 
-        // Auto-transition to parted when both signatures are present
-        if propose.partCreatorSignature != nil && propose.partCounterpartySignature != nil {
+        // Auto-transition to parted when all participants have signed
+        if creatorParted && propose.counterparties.allSatisfy({ $0.partSignature != nil }) {
             propose.proposeStatus = .parted
+            try await propose.save(on: req.db)
         }
-
-        try await propose.save(on: req.db)
 
         return .ok
     }

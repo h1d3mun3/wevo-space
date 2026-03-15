@@ -6,6 +6,6 @@ struct CreateProposeInput: Content {
     let contentHash: String
     let creatorPublicKey: String
     let creatorSignature: String
-    let counterpartyPublicKey: String
+    let counterpartyPublicKeys: [String]  // One or more counterparties
     let createdAt: String
 }

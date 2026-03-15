@@ -12,6 +12,7 @@ struct ProposeControllerTests {
         do {
             app.databases.use(.sqlite(.memory), as: .sqlite)
             app.migrations.add(CreateProposesTable())
+            app.migrations.add(CreateCounterpartiesTable())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
@@ -58,6 +59,7 @@ struct ProposeControllerTests {
         creatorKeyPair: KeyPair = KeyPair(),
         counterpartyKeyPair: KeyPair = KeyPair()
     ) async throws -> (proposeId: UUID, contentHash: String, createdAt: String, creator: KeyPair, counterparty: KeyPair) {
+        // Single counterparty: sorted().joined() == publicKeyBase64
         let message = proposeId.uuidString + contentHash + counterpartyKeyPair.publicKeyBase64 + createdAt
         let creatorSig = try creatorKeyPair.sign(message)
 
@@ -66,7 +68,7 @@ struct ProposeControllerTests {
             contentHash: contentHash,
             creatorPublicKey: creatorKeyPair.publicKeyBase64,
             creatorSignature: creatorSig,
-            counterpartyPublicKey: counterpartyKeyPair.publicKeyBase64,
+            counterpartyPublicKeys: [counterpartyKeyPair.publicKeyBase64],
             createdAt: createdAt
         )
 
@@ -98,7 +100,7 @@ struct ProposeControllerTests {
                 contentHash: contentHash,
                 creatorPublicKey: creator.publicKeyBase64,
                 creatorSignature: creatorSig,
-                counterpartyPublicKey: counterparty.publicKeyBase64,
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
                 createdAt: createdAt
             )
 
@@ -112,7 +114,11 @@ struct ProposeControllerTests {
                 #expect(propose?.contentHash == contentHash)
                 #expect(propose?.proposeStatus == .proposed)
                 #expect(propose?.creatorPublicKey == creator.publicKeyBase64)
-                #expect(propose?.counterpartyPublicKey == counterparty.publicKeyBase64)
+
+                let counterparties = try await ProposeCounterparty.query(on: app.db)
+                    .filter(\.$publicKey == counterparty.publicKeyBase64)
+                    .all()
+                #expect(counterparties.count == 1)
             })
         }
     }
@@ -131,7 +137,7 @@ struct ProposeControllerTests {
                 contentHash: contentHash,
                 creatorPublicKey: creator.publicKeyBase64,
                 creatorSignature: wrongSig,
-                counterpartyPublicKey: counterparty.publicKeyBase64,
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
                 createdAt: "2026-01-01T00:00:00Z"
             )
 
@@ -162,7 +168,7 @@ struct ProposeControllerTests {
                 contentHash: contentHash,
                 creatorPublicKey: creator.publicKeyBase64,
                 creatorSignature: creatorSig,
-                counterpartyPublicKey: counterparty.publicKeyBase64,
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
                 createdAt: createdAt
             )
 
@@ -192,7 +198,7 @@ struct ProposeControllerTests {
                 contentHash: "test-hash",
                 creatorPublicKey: creator.publicKeyBase64,
                 creatorSignature: "dummy",
-                counterpartyPublicKey: counterparty.publicKeyBase64,
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
                 createdAt: "2026-01-01T00:00:00Z"
             )
 
@@ -213,10 +219,10 @@ struct ProposeControllerTests {
 
             try await app.testing().test(.GET, "v1/proposes/\(proposeId)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let propose = try res.content.decode(Propose.self)
+                let propose = try res.content.decode(ProposeResponse.self)
                 #expect(propose.id == proposeId)
                 #expect(propose.contentHash == contentHash)
-                #expect(propose.proposeStatus == .proposed)
+                #expect(propose.status == ProposeStatus.proposed.rawValue)
             })
         }
     }
@@ -261,7 +267,7 @@ struct ProposeControllerTests {
 
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let page = try res.content.decode(Page<Propose>.self)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
             })
         }
@@ -278,7 +284,7 @@ struct ProposeControllerTests {
 
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let page = try res.content.decode(Page<Propose>.self)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
             })
         }
@@ -298,7 +304,7 @@ struct ProposeControllerTests {
             // proposed → signed へ遷移させる
             let signMessage = proposeId.uuidString + contentHash + counterpartyKP.publicKeyBase64 + createdAt
             let counterpartySig = try counterpartyKP.sign(signMessage)
-            let signInput = SignInput(counterpartySignature: counterpartySig, createdAt: createdAt)
+            let signInput = SignInput(signerPublicKey: counterpartyKP.publicKeyBase64, signature: counterpartySig, createdAt: createdAt)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(signInput)
             }, afterResponse: { res async throws in
@@ -310,21 +316,21 @@ struct ProposeControllerTests {
             // proposed フィルタ → 0件
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let page = try res.content.decode(Page<Propose>.self)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 0)
             })
 
             // signed フィルタ → 1件
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=signed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let page = try res.content.decode(Page<Propose>.self)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
             })
 
             // proposed,signed フィルタ → 1件
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed,signed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let page = try res.content.decode(Page<Propose>.self)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
             })
         }
@@ -337,9 +343,10 @@ struct ProposeControllerTests {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
+            // sign message: proposeId + contentHash + signerPublicKey + createdAt
             let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let sig = try counterparty.sign(message)
-            let input = SignInput(counterpartySignature: sig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -348,7 +355,11 @@ struct ProposeControllerTests {
 
                 let propose = try await Propose.find(proposeId, on: app.db)
                 #expect(propose?.proposeStatus == .signed)
-                #expect(propose?.counterpartySignature == sig)
+
+                let cp = try await ProposeCounterparty.query(on: app.db)
+                    .filter(\.$publicKey == counterparty.publicKeyBase64)
+                    .first()
+                #expect(cp?.signSignature == sig)
             })
         }
     }
@@ -359,7 +370,7 @@ struct ProposeControllerTests {
             let (proposeId, _, createdAt, _, counterparty) = try await createPropose(app: app)
 
             let wrongSig = try counterparty.sign("wrong-message")
-            let input = SignInput(counterpartySignature: wrongSig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: wrongSig, createdAt: createdAt)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -380,7 +391,7 @@ struct ProposeControllerTests {
             let wrongCreatedAt = "2099-01-01T00:00:00Z"
             let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + wrongCreatedAt
             let sig = try counterparty.sign(message)
-            let input = SignInput(counterpartySignature: sig, createdAt: wrongCreatedAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: wrongCreatedAt)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -394,7 +405,7 @@ struct ProposeControllerTests {
     func signNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let proposeId = UUID()
-            let input = SignInput(counterpartySignature: "dummy", createdAt: "2026-01-01T00:00:00Z")
+            let input = SignInput(signerPublicKey: "dummy-key", signature: "dummy-sig", createdAt: "2026-01-01T00:00:00Z")
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -412,7 +423,7 @@ struct ProposeControllerTests {
             // 1回目のsign（proposed → signed）
             let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let sig = try counterparty.sign(message)
-            let input = SignInput(counterpartySignature: sig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -420,7 +431,7 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
-            // 2回目のsign → conflict
+            // 2回目のsign → conflict（signed状態のため）
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -538,7 +549,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -568,7 +579,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -608,7 +619,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -636,7 +647,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -700,7 +711,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -739,7 +750,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -792,7 +803,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("同一参加者が二回目のpart署名を送信してもエラーにならない")
+    @Test("同一参加者が二回目のpart署名を送信しても上書きされる")
     func partSamePartyTwiceIsAccepted() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -801,7 +812,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -840,7 +851,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -870,7 +881,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // signed → honored
@@ -905,7 +916,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // signed → parted
@@ -921,7 +932,7 @@ struct ProposeControllerTests {
             // parted → sign試行 → conflict
             let newSig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: newSig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
             })
@@ -945,7 +956,7 @@ struct ProposeControllerTests {
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let sig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(counterpartySignature: sig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
             })

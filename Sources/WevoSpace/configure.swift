@@ -19,6 +19,7 @@ public func configure(_ app: Application) async throws {
     try configureDatabase(app)
 
     app.migrations.add(CreateProposesTable())
+    app.migrations.add(CreateCounterpartiesTable())
 
     // register routes
     try routes(app)
