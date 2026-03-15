@@ -42,6 +42,13 @@ struct ProposeControllerTests {
         }
     }
 
+    /// Base64公開鍵をURLクエリパラメータ用にエンコードする（+を%2Bに変換）
+    private func encodePublicKey(_ key: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+")
+        return key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+    }
+
     /// テスト用のProposeを作成して返す
     private func createPropose(
         app: Application,
@@ -250,7 +257,7 @@ struct ProposeControllerTests {
             let counterparty = KeyPair()
             try await createPropose(app: app, creatorKeyPair: creator, counterpartyKeyPair: counterparty)
 
-            let encodedKey = creator.publicKeyBase64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? creator.publicKeyBase64
+            let encodedKey = encodePublicKey(creator.publicKeyBase64)
 
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
@@ -267,7 +274,7 @@ struct ProposeControllerTests {
             let counterparty = KeyPair()
             try await createPropose(app: app, creatorKeyPair: creator, counterpartyKeyPair: counterparty)
 
-            let encodedKey = counterparty.publicKeyBase64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? counterparty.publicKeyBase64
+            let encodedKey = encodePublicKey(counterparty.publicKeyBase64)
 
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
@@ -298,7 +305,7 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
-            let encodedKey = creator.publicKeyBase64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? creator.publicKeyBase64
+            let encodedKey = encodePublicKey(creator.publicKeyBase64)
 
             // proposed フィルタ → 0件
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed", afterResponse: { res async throws in
