@@ -19,6 +19,7 @@ struct WevoSpaceTests {
         }
         try await app.asyncShutdown()
     }
+<<<<<<< HEAD
 
     @Test("Health check route returns ok")
     func healthCheck() async throws {
@@ -42,4 +43,7 @@ struct WevoSpaceTests {
             })
         }
     }
+=======
+    
+>>>>>>> main
 }
