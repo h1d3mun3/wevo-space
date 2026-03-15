@@ -2,226 +2,468 @@ openapi: 3.0.0
 info:
   title: WevoSpace Propose API
   description: |
-    API for managing Proposes and their cryptographic signatures.
-    A Propose is a message that can be approved by multiple cryptographic signatures.
+    API for recording and managing two-party agreements with cryptographic signatures.
+    No authentication tokens required — all state transitions are secured by P-256 ECDSA signature verification.
   version: 1.0.0
   contact:
     name: WevoSpace Team
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:8080/v1
     description: Development server
-  - url: https://api.wevoSpace.example.com
+  - url: https://api.wevospace.example.com/v1
     description: Production server
+
+tags:
+  - name: Propose
+    description: Create, retrieve, and transition Proposes
 
 paths:
   /proposes:
-    post:
-      summary: Create a new Propose
+    get:
+      summary: List proposes
       description: |
-        Creates a new Propose with a payload hash and initial signatures.
-        The provided signatures are verified for validity.
-      tags:
-        - Propose
+        Returns proposes where the specified public key is either the creator or the counterparty.
+        Multiple status values can be specified as comma-separated values.
+      tags: [Propose]
+      parameters:
+        - name: publicKey
+          in: query
+          required: true
+          description: Public key to search by (Base64 / X.963 format)
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          description: Filter by status (comma-separated for multiple values, e.g. proposed,signed)
+          schema:
+            type: string
+            example: proposed,signed
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: per
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposePage'
+        '400':
+          description: publicKey is missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      summary: Create a propose
+      description: |
+        The creator creates a new Propose.
+        Message to sign: `proposeId + contentHash + counterpartyPublicKey + createdAt`
+      tags: [Propose]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProposeInput'
-            examples:
-              valid:
-                summary: Example of a valid Propose
-                value:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  payloadHash: "abc123def456"
-                  signatures:
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD1234567890..."
+              $ref: '#/components/schemas/CreateProposeInput'
+            example:
+              proposeId: "550E8400-E29B-41D4-A716-446655440000"
+              contentHash: "abc123def456"
+              creatorPublicKey: "BHqG..."
+              creatorSignature: "MEUC..."
+              counterpartyPublicKey: "BIrH..."
+              createdAt: "2026-01-01T00:00:00Z"
       responses:
         '201':
           description: Propose created successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: uuid
-                  payloadHash:
-                    type: string
-                  createdAt:
-                    type: string
-                    format: date-time
         '400':
-          description: |
-            Invalid request. Possible reasons:
-            - payloadHash exceeds 256 characters
-            - signatures array exceeds 1000 items
-            - publicKey exceeds 500 characters
-            - signature exceeds 500 characters
-            - publicKey is not valid Base64 format
+          description: Invalid proposeId format
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                payloadHashTooLong:
-                  summary: Payload hash exceeds limit
-                  value:
-                    error: "payloadHash must be 256 characters or less"
-                tooManySignatures:
-                  summary: Too many signatures
-                  value:
-                    error: "signatures must be 1000 or fewer"
-                invalidBase64:
-                  summary: Invalid Base64 format
-                  value:
-                    error: "publicKey must be valid Base64 encoded"
         '401':
-          description: |
-            Signature verification failed.
-            The provided signature is not valid for the given payload hash.
+          description: Signature verification failed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Invalid signature for given payload hash"
+        '409':
+          description: A Propose with the same ID already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /proposes/{id}:
-    put:
-      summary: Add signatures to an existing Propose
-      description: |
-        Adds new signatures to an existing Propose.
-        All signatures (both existing and new) are verified for validity.
-      tags:
-        - Propose
+    get:
+      summary: Get propose details
+      tags: [Propose]
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Propose ID
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ProposeInput'
-            examples:
-              addSignature:
-                summary: Example of adding a signature
-                value:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  payloadHash: "abc123def456"
-                  signatures:
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD1234567890..."
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD0987654321..."
+        - $ref: '#/components/parameters/ProposeId'
       responses:
         '200':
-          description: Signature added successfully
+          description: Success
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: uuid
-                  payloadHash:
-                    type: string
-                  signatureCount:
-                    type: integer
-                  updatedAt:
-                    type: string
-                    format: date-time
+                $ref: '#/components/schemas/Propose'
         '400':
-          description: |
-            Invalid request. Possible reasons:
-            - Invalid UUID format in path
-            - payloadHash exceeds 256 characters
-            - signatures array exceeds 1000 items
-            - publicKey exceeds 500 characters
-            - signature exceeds 500 characters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Invalid UUID format"
-        '401':
-          description: |
-            Signature verification failed.
-            One or more of the provided signatures is not valid for the given payload hash.
+          description: Invalid UUID format
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose with the specified ID not found
+          description: Propose not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Propose not found"
+
+    delete:
+      summary: Dissolve a propose (proposed → dissolved)
+      description: |
+        Either the creator or counterparty signs to dissolve the Propose. Only allowed from `proposed` state.
+        Message to sign: `"dissolved." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-02T00:00:00Z"
+      responses:
+        '200':
+          description: Dissolved successfully; transitions to dissolved
+        '401':
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Public key does not belong to a participant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Propose not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Propose is not in proposed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/sign:
+    patch:
+      summary: Counterparty signs (proposed → signed)
+      description: |
+        The counterparty signs to transition the Propose to `signed` state.
+        Message to sign: `proposeId + contentHash + counterpartyPublicKey + createdAt`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInput'
+            example:
+              counterpartySignature: "MEUC..."
+              createdAt: "2026-01-01T00:00:00Z"
+      responses:
+        '200':
+          description: Signed successfully; transitions to signed
+        '400':
+          description: createdAt mismatch or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Propose not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Propose is not in proposed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/honor:
+    patch:
+      summary: Submit honor signature (signed → honored)
+      description: |
+        Each party submits a signature. Once both have signed, the Propose automatically transitions to `honored`.
+        Message to sign: `"honored." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-03T00:00:00Z"
+      responses:
+        '200':
+          description: Signature recorded; transitions to honored when both are submitted
+        '401':
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Public key does not belong to a participant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Propose not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Propose is not in signed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/part:
+    patch:
+      summary: Submit part signature (signed → parted)
+      description: |
+        Each party submits a signature. Once both have signed, the Propose automatically transitions to `parted`.
+        Message to sign: `"parted." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-03T00:00:00Z"
+      responses:
+        '200':
+          description: Signature recorded; transitions to parted when both are submitted
+        '401':
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Public key does not belong to a participant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Propose not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Propose is not in signed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  parameters:
+    ProposeId:
+      name: id
+      in: path
+      required: true
+      description: Propose ID (UUID)
+      schema:
+        type: string
+        format: uuid
+
   schemas:
-    ProposeInput:
+    Propose:
       type: object
-      required:
-        - id
-        - payloadHash
-        - signatures
       properties:
         id:
           type: string
           format: uuid
-          description: Propose ID (generated by client)
-        payloadHash:
+          description: Propose ID (client-generated)
+        contentHash:
           type: string
-          maxLength: 256
-          description: Hash value of the payload (e.g., SHA256)
-        signatures:
-          type: array
-          maxItems: 1000
-          minItems: 1
-          description: Array of signatures for this Propose
-          items:
-            $ref: '#/components/schemas/SignatureInput'
+          description: Hash of the content
+        creatorPublicKey:
+          type: string
+          description: Creator's public key (Base64 / X.963 format)
+        creatorSignature:
+          type: string
+          description: Creator's signature (Base64 / DER format)
+        counterpartyPublicKey:
+          type: string
+          description: Counterparty's public key (Base64 / X.963 format)
+        counterpartySignature:
+          type: string
+          nullable: true
+          description: Counterparty's signature (set after signing)
+        honorCreatorSignature:
+          type: string
+          nullable: true
+          description: Creator's honor signature
+        honorCounterpartySignature:
+          type: string
+          nullable: true
+          description: Counterparty's honor signature
+        partCreatorSignature:
+          type: string
+          nullable: true
+          description: Creator's part signature
+        partCounterpartySignature:
+          type: string
+          nullable: true
+          description: Counterparty's part signature
+        status:
+          type: string
+          enum: [proposed, signed, honored, dissolved, parted]
+          description: Current status
+        createdAt:
+          type: string
+          description: Creation timestamp (ISO8601, client-generated)
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last updated timestamp (server-managed)
 
-    SignatureInput:
+    ProposePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Propose'
+        metadata:
+          type: object
+          properties:
+            page:
+              type: integer
+            per:
+              type: integer
+            total:
+              type: integer
+
+    CreateProposeInput:
+      type: object
+      required:
+        - proposeId
+        - contentHash
+        - creatorPublicKey
+        - creatorSignature
+        - counterpartyPublicKey
+        - createdAt
+      properties:
+        proposeId:
+          type: string
+          description: UUID string (client-generated)
+        contentHash:
+          type: string
+          description: Hash of the content
+        creatorPublicKey:
+          type: string
+          description: Creator's public key (Base64 / X.963 format)
+        creatorSignature:
+          type: string
+          description: Creator's signature (Base64 / DER format)
+        counterpartyPublicKey:
+          type: string
+          description: Counterparty's public key (Base64 / X.963 format)
+        createdAt:
+          type: string
+          description: ISO8601 creation timestamp
+
+    SignInput:
+      type: object
+      required:
+        - counterpartySignature
+        - createdAt
+      properties:
+        counterpartySignature:
+          type: string
+          description: Counterparty's signature (Base64 / DER format)
+        createdAt:
+          type: string
+          description: Must match the Propose's createdAt
+
+    TransitionInput:
       type: object
       required:
         - publicKey
         - signature
+        - timestamp
       properties:
         publicKey:
           type: string
-          maxLength: 500
-          description: Base64-encoded public key (P256 X.963 format)
+          description: Requester's public key (creator or counterparty)
         signature:
           type: string
-          maxLength: 500
-          description: Base64-encoded DER format signature
+          description: Requester's signature (Base64 / DER format)
+        timestamp:
+          type: string
+          description: Operation timestamp (ISO8601)
 
     ErrorResponse:
       type: object
       properties:
         error:
+          type: boolean
+          example: true
+        reason:
           type: string
-          description: Error message
-        details:
-          type: object
-          description: Additional error details (optional)
-
-tags:
-  - name: Propose
-    description: Create and manage Proposes and signatures
+          description: Error description

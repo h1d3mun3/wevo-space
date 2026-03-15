@@ -2,226 +2,468 @@ openapi: 3.0.0
 info:
   title: WevoSpace Propose API
   description: |
-    Proposeの作成と署名管理API。
-    複数の暗号署名によって承認されたメッセージ（Propose）を管理します。
+    2者間の合意を暗号署名で記録・管理するAPI。
+    認証機構は設けず、すべての状態遷移はP-256 ECDSA署名検証によって担保されます。
   version: 1.0.0
   contact:
     name: WevoSpace Team
 
 servers:
-  - url: http://localhost:8080
-    description: Development server
-  - url: https://api.wevoSpace.example.com
-    description: Production server
+  - url: http://localhost:8080/v1
+    description: 開発環境
+  - url: https://api.wevospace.example.com/v1
+    description: 本番環境
+
+tags:
+  - name: Propose
+    description: Proposeの作成・取得・状態遷移
 
 paths:
   /proposes:
-    post:
-      summary: 新しいProposeを作成
+    get:
+      summary: Propose一覧取得
       description: |
-        ペイロードハッシュと初期署名を含む新しいProposeを作成します。
-        提供された署名が有効であることが確認されます。
-      tags:
-        - Propose
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ProposeInput'
-            examples:
-              valid:
-                summary: 有効なProposeの例
-                value:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  payloadHash: "abc123def456"
-                  signatures:
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD1234567890..."
-      responses:
-        '201':
-          description: Propose作成成功
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: uuid
-                  payloadHash:
-                    type: string
-                  createdAt:
-                    type: string
-                    format: date-time
-        '400':
-          description: |
-            リクエストが無効です。以下の理由が考えられます：
-            - payloadHashが256文字を超えている
-            - signatures配列が1000個を超えている
-            - publicKeyが500文字を超えている
-            - signatureが500文字を超えている
-            - publicKeyが有効なBase64形式ではない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              examples:
-                payloadHashTooLong:
-                  summary: payloadHash超過エラー
-                  value:
-                    error: "payloadHash must be 256 characters or less"
-                tooManySignatures:
-                  summary: 署名数超過エラー
-                  value:
-                    error: "signatures must be 1000 or fewer"
-                invalidBase64:
-                  summary: Base64形式エラー
-                  value:
-                    error: "publicKey must be valid Base64 encoded"
-        '401':
-          description: |
-            署名検証に失敗しました。
-            提供された署名がpayloadHashに対して有効ではありません。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Invalid signature for given payload hash"
-
-  /proposes/{id}:
-    put:
-      summary: 既存のProposeに署名を追加
-      description: |
-        既存のProposeに新しい署名を追加します。
-        すべての署名（既存と新規）が有効であることが確認されます。
-      tags:
-        - Propose
+        指定した公開鍵が creator または counterparty であるProposeを返します。
+        statusパラメータでカンマ区切りの複数指定が可能です。
+      tags: [Propose]
       parameters:
-        - name: id
-          in: path
+        - name: publicKey
+          in: query
           required: true
-          description: Propose ID
+          description: 検索する公開鍵（Base64 / X.963形式）
           schema:
             type: string
-            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: 絞り込むステータス（カンマ区切りで複数指定可。例: proposed,signed）
+          schema:
+            type: string
+            example: proposed,signed
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: per
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: 取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposePage'
+        '400':
+          description: publicKeyが未指定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      summary: Propose作成
+      description: |
+        作成者が新しいProposeを作成します。
+        署名対象: `proposeId + contentHash + counterpartyPublicKey + createdAt`
+      tags: [Propose]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProposeInput'
-            examples:
-              addSignature:
-                summary: 署名を追加する例
-                value:
-                  id: "550e8400-e29b-41d4-a716-446655440000"
-                  payloadHash: "abc123def456"
-                  signatures:
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD1234567890..."
-                    - publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K..."
-                      signature: "MEUCIQD0987654321..."
+              $ref: '#/components/schemas/CreateProposeInput'
+            example:
+              proposeId: "550E8400-E29B-41D4-A716-446655440000"
+              contentHash: "abc123def456"
+              creatorPublicKey: "BHqG..."
+              creatorSignature: "MEUC..."
+              counterpartyPublicKey: "BIrH..."
+              createdAt: "2026-01-01T00:00:00Z"
       responses:
-        '200':
-          description: 署名追加成功
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: uuid
-                  payloadHash:
-                    type: string
-                  signatureCount:
-                    type: integer
-                  updatedAt:
-                    type: string
-                    format: date-time
+        '201':
+          description: 作成成功
         '400':
-          description: |
-            リクエストが無効です。以下の理由が考えられます：
-            - 無効なUUID形式でアクセスした
-            - payloadHashが256文字を超えている
-            - signatures配列が1000個を超えている
-            - publicKeyが500文字を超えている
-            - signatureが500文字を超えている
+          description: proposeIdの形式が無効
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Invalid UUID format"
         '401':
-          description: |
-            署名検証に失敗しました。
-            提供されたいずれかの署名がpayloadHashに対して無効です。
+          description: 署名検証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 同じIDのProposeが既に存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}:
+    get:
+      summary: Propose詳細取得
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      responses:
+        '200':
+          description: 取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Propose'
+        '400':
+          description: 無効なUUID形式
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: 指定されたIDのProposeが見つかりません
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: "Propose not found"
+
+    delete:
+      summary: Proposeを解消（proposed → dissolved）
+      description: |
+        作成者または相手方が署名してProposeを解消します。proposed状態のみ可。
+        署名対象: `"dissolved." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-02T00:00:00Z"
+      responses:
+        '200':
+          description: 解消成功、dissolvedに遷移
+        '401':
+          description: 署名検証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 参加者以外の公開鍵
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Proposeが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: proposed状態ではない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/sign:
+    patch:
+      summary: 相手方が署名（proposed → signed）
+      description: |
+        相手方が署名してProposeをsigned状態に遷移させます。
+        署名対象: `proposeId + contentHash + counterpartyPublicKey + createdAt`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInput'
+            example:
+              counterpartySignature: "MEUC..."
+              createdAt: "2026-01-01T00:00:00Z"
+      responses:
+        '200':
+          description: 署名成功、signedに遷移
+        '400':
+          description: createdAtが不一致または無効なUUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 署名検証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Proposeが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: proposed状態ではない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/honor:
+    patch:
+      summary: Honor署名を追加（signed → honored）
+      description: |
+        各参加者が署名を追加します。両者が揃うとhonored状態に自動遷移。
+        署名対象: `"honored." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-03T00:00:00Z"
+      responses:
+        '200':
+          description: 署名記録。両者揃えばhonored遷移
+        '401':
+          description: 署名検証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 参加者以外の公開鍵
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Proposeが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: signed状態ではない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proposes/{id}/part:
+    patch:
+      summary: Part署名を追加（signed → parted）
+      description: |
+        各参加者が署名を追加します。両者が揃うとparted状態に自動遷移。
+        署名対象: `"parted." + proposeId + contentHash + timestamp`
+      tags: [Propose]
+      parameters:
+        - $ref: '#/components/parameters/ProposeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionInput'
+            example:
+              publicKey: "BHqG..."
+              signature: "MEUC..."
+              timestamp: "2026-01-03T00:00:00Z"
+      responses:
+        '200':
+          description: 署名記録。両者揃えばparted遷移
+        '401':
+          description: 署名検証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 参加者以外の公開鍵
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Proposeが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: signed状態ではない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  parameters:
+    ProposeId:
+      name: id
+      in: path
+      required: true
+      description: Propose ID（UUID）
+      schema:
+        type: string
+        format: uuid
+
   schemas:
-    ProposeInput:
+    Propose:
       type: object
-      required:
-        - id
-        - payloadHash
-        - signatures
       properties:
         id:
           type: string
           format: uuid
-          description: Propose ID (クライアント生成)
-        payloadHash:
+          description: Propose ID（クライアントが生成）
+        contentHash:
           type: string
-          maxLength: 256
-          description: ペイロードのハッシュ値（SHA256など）
-        signatures:
-          type: array
-          maxItems: 1000
-          minItems: 1
-          description: このProposeに対する署名の配列
-          items:
-            $ref: '#/components/schemas/SignatureInput'
+          description: コンテンツのハッシュ値
+        creatorPublicKey:
+          type: string
+          description: 作成者の公開鍵（Base64 / X.963形式）
+        creatorSignature:
+          type: string
+          description: 作成者の署名（Base64 / DER形式）
+        counterpartyPublicKey:
+          type: string
+          description: 相手方の公開鍵（Base64 / X.963形式）
+        counterpartySignature:
+          type: string
+          nullable: true
+          description: 相手方の署名（signed以降にセット）
+        honorCreatorSignature:
+          type: string
+          nullable: true
+          description: 作成者のhonor署名
+        honorCounterpartySignature:
+          type: string
+          nullable: true
+          description: 相手方のhonor署名
+        partCreatorSignature:
+          type: string
+          nullable: true
+          description: 作成者のpart署名
+        partCounterpartySignature:
+          type: string
+          nullable: true
+          description: 相手方のpart署名
+        status:
+          type: string
+          enum: [proposed, signed, honored, dissolved, parted]
+          description: 現在の状態
+        createdAt:
+          type: string
+          description: 作成日時（ISO8601、クライアントが生成）
+        updatedAt:
+          type: string
+          format: date-time
+          description: 最終更新日時（サーバーが管理）
 
-    SignatureInput:
+    ProposePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Propose'
+        metadata:
+          type: object
+          properties:
+            page:
+              type: integer
+            per:
+              type: integer
+            total:
+              type: integer
+
+    CreateProposeInput:
+      type: object
+      required:
+        - proposeId
+        - contentHash
+        - creatorPublicKey
+        - creatorSignature
+        - counterpartyPublicKey
+        - createdAt
+      properties:
+        proposeId:
+          type: string
+          description: UUID文字列（クライアントが生成）
+        contentHash:
+          type: string
+          description: コンテンツのハッシュ値
+        creatorPublicKey:
+          type: string
+          description: 作成者の公開鍵（Base64 / X.963形式）
+        creatorSignature:
+          type: string
+          description: 作成者の署名（Base64 / DER形式）
+        counterpartyPublicKey:
+          type: string
+          description: 相手方の公開鍵（Base64 / X.963形式）
+        createdAt:
+          type: string
+          description: ISO8601形式の作成日時
+
+    SignInput:
+      type: object
+      required:
+        - counterpartySignature
+        - createdAt
+      properties:
+        counterpartySignature:
+          type: string
+          description: 相手方の署名（Base64 / DER形式）
+        createdAt:
+          type: string
+          description: ProposeのcreatedAt（一致確認用）
+
+    TransitionInput:
       type: object
       required:
         - publicKey
         - signature
+        - timestamp
       properties:
         publicKey:
           type: string
-          maxLength: 500
-          description: Base64エンコードされた公開鍵（P256 X.963形式）
+          description: 操作者の公開鍵（creator or counterparty）
         signature:
           type: string
-          maxLength: 500
-          description: Base64エンコードされたDER形式の署名
+          description: 操作者の署名（Base64 / DER形式）
+        timestamp:
+          type: string
+          description: 操作日時（ISO8601）
 
     ErrorResponse:
       type: object
       properties:
         error:
+          type: boolean
+          example: true
+        reason:
           type: string
-          description: エラーメッセージ
-        details:
-          type: object
-          description: エラーの詳細情報（オプション）
-
-tags:
-  - name: Propose
-    description: Proposeの作成と署名管理
+          description: エラーの理由

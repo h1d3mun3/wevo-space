@@ -1,321 +1,391 @@
-# WevoSpace Propose API ドキュメント
+# WevoSpace Propose API Documentation
 
-## 概要
+## Overview
 
-Proposeは、複数の暗号署名によって承認されたメッセージです。このAPIでは、Proposeの作成と署名の追加管理ができます。
+A Propose is a mechanism for recording and managing two-party agreements with cryptographic signatures. Two parties are involved: the **creator** and the **counterparty**. All state transitions are secured by signature verification — no authentication tokens are required.
 
-**認証**: 現在、認証機構はありません。本番環境での使用前にセキュリティを実装してください。
-
----
-
-## ベースURL
-
-- **開発環境**: `http://localhost:8080`
-- **本番環境**: `https://api.wevoSpace.example.com`
+**Base URL**:
+- Development: `http://localhost:8080/v1`
+- Production: `https://api.wevospace.example.com/v1`
 
 ---
 
-## エンドポイント一覧
+## Data Model
 
-| メソッド | パス | 説明 |
-|---------|------|------|
-| POST | `/proposes` | 新しいProposeを作成 |
-| PUT | `/proposes/{id}` | 既存のProposeに署名を追加 |
+### Propose
 
----
+| Field | Type | Description |
+|---|---|---|
+| `id` | UUID | Propose ID (client-generated) |
+| `contentHash` | string | Hash of the content |
+| `creatorPublicKey` | string | Creator's public key (Base64 / DER) |
+| `creatorSignature` | string | Creator's signature (Base64 / DER) |
+| `counterpartyPublicKey` | string | Counterparty's public key (Base64 / DER) |
+| `counterpartySignature` | string? | Counterparty's signature (set after signing) |
+| `honorCreatorSignature` | string? | Creator's honor signature |
+| `honorCounterpartySignature` | string? | Counterparty's honor signature |
+| `partCreatorSignature` | string? | Creator's part signature |
+| `partCounterpartySignature` | string? | Counterparty's part signature |
+| `status` | string | Current status (see below) |
+| `createdAt` | string | Creation timestamp (ISO8601, client-generated) |
+| `updatedAt` | string | Last updated timestamp (server-managed) |
 
-## 1. Proposeを作成
+### Status Values
 
-### リクエスト
+| status | Meaning |
+|---|---|
+| `proposed` | Created by creator, awaiting counterparty signature |
+| `signed` | Counterparty signed; agreement established |
+| `honored` | Both parties submitted honor signatures |
+| `dissolved` | Dissolved from `proposed` state |
+| `parted` | Both parties submitted part signatures |
+
+### State Transition Diagram
 
 ```
-POST /proposes
-Content-Type: application/json
+proposed ──sign──→ signed ──honor (both)──→ honored
+    │                 │
+  dissolve         part (both)
+    │                 │
+    ↓                 ↓
+dissolved           parted
 ```
 
-#### リクエストボディ
+---
+
+## Signature Specification
+
+- Key algorithm: **P-256 ECDSA**
+- Public key format: Base64-encoded **X.963 format** (65 bytes)
+- Signature format: Base64-encoded **DER format**
+
+### Message to Sign
+
+The string to sign for each operation is formed by concatenating the following fields (no separator):
+
+| Operation | Message |
+|---|---|
+| Create / sign | `proposeId + contentHash + counterpartyPublicKey + createdAt` |
+| dissolved | `"dissolved." + proposeId + contentHash + timestamp` |
+| honored | `"honored." + proposeId + contentHash + timestamp` |
+| parted | `"parted." + proposeId + contentHash + timestamp` |
+
+> **Note**: Use the uppercase UUID string format for `proposeId` (e.g., `550E8400-E29B-41D4-A716-446655440000`).
+
+---
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/proposes` | List proposes |
+| `POST` | `/proposes` | Create a propose |
+| `GET` | `/proposes/:id` | Get propose details |
+| `PATCH` | `/proposes/:id/sign` | Counterparty signs (proposed → signed) |
+| `DELETE` | `/proposes/:id` | Dissolve (proposed → dissolved) |
+| `PATCH` | `/proposes/:id/honor` | Submit honor signature (signed → honored) |
+| `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted) |
+
+---
+
+## 1. GET /proposes — List Proposes
+
+Returns proposes where the specified public key is either the creator or the counterparty.
+
+### Query Parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `publicKey` | ✅ | Public key to search by (Base64 / DER) |
+| `status` | ✗ | Filter by status (comma-separated for multiple) |
+| `page` | ✗ | Page number (default: 1) |
+| `per` | ✗ | Items per page (default: 10) |
+
+### Request Example
+
+```
+GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
+```
+
+### Response (200 OK)
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "payloadHash": "abc123def456",
-  "signatures": [
+  "items": [
     {
-      "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-      "signature": "MEUCIQD1234567890..."
+      "id": "550E8400-E29B-41D4-A716-446655440000",
+      "contentHash": "abc123def456",
+      "creatorPublicKey": "BHqG...",
+      "creatorSignature": "MEUC...",
+      "counterpartyPublicKey": "BIrH...",
+      "counterpartySignature": null,
+      "honorCreatorSignature": null,
+      "honorCounterpartySignature": null,
+      "partCreatorSignature": null,
+      "partCounterpartySignature": null,
+      "status": "proposed",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-01T00:00:00Z"
     }
-  ]
+  ],
+  "metadata": {
+    "page": 1,
+    "per": 10,
+    "total": 1
+  }
 }
 ```
 
-#### パラメータ
+### Errors
 
-| 項目 | 型 | 必須 | 説明 | 制限 |
-|------|-----|------|------|------|
-| `id` | UUID | ✅ | Propose ID（クライアント生成） | - |
-| `payloadHash` | string | ✅ | ペイロードのハッシュ値（SHA256など） | 最大256文字 |
-| `signatures` | array | ✅ | 署名の配列 | 1〜1000個 |
-| `signatures[].publicKey` | string | ✅ | Base64エンコードされた公開鍵（P256 X.963形式） | 最大500文字 |
-| `signatures[].signature` | string | ✅ | Base64エンコードされたDER形式の署名 | 最大500文字 |
-
-### レスポンス
-
-#### 成功時 (201 Created)
-
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "payloadHash": "abc123def456",
-  "createdAt": "2026-03-11T10:30:00Z"
-}
-```
-
-#### エラー時
-
-##### 400 Bad Request - 入力値の検証エラー
-
-```json
-{
-  "error": "payloadHash must be 256 characters or less"
-}
-```
-
-**発生する可能性のあるエラー:**
-- `payloadHash must be 256 characters or less` - payloadHashが256文字を超えている
-- `signatures must be 1000 or fewer` - signatures配列が1000個を超えている
-- `publicKey must be 500 characters or less` - publicKeyが500文字を超えている
-- `signature must be 500 characters or less` - signatureが500文字を超えている
-- `publicKey must be valid Base64 encoded` - publicKeyが有効なBase64形式ではない
-- `Invalid signature for given payload hash` - 署名がpayloadHashに対して無効
-
-##### 401 Unauthorized - 署名検証失敗
-
-```json
-{
-  "error": "Invalid signature for given payload hash"
-}
-```
-
-提供された署名がpayloadHashに対して有効ではありません。署名がメッセージに対して正しく生成されたことを確認してください。
+| Status | Reason |
+|---|---|
+| 400 | `publicKey` is missing |
 
 ---
 
-## 2. 既存のProposeに署名を追加
+## 2. POST /proposes — Create a Propose
 
-### リクエスト
+The creator creates a new Propose. The creator signs `proposeId + contentHash + counterpartyPublicKey + createdAt`.
 
-```
-PUT /proposes/{id}
-Content-Type: application/json
-```
-
-#### パスパラメータ
-
-| 項目 | 型 | 説明 |
-|------|-----|------|
-| `id` | UUID | 署名を追加するPropose ID |
-
-#### リクエストボディ
-
-既存の署名と新しい署名をすべて含めます。
+### Request Body
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "payloadHash": "abc123def456",
-  "signatures": [
-    {
-      "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-      "signature": "MEUCIQD1234567890..."
-    },
-    {
-      "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-      "signature": "MEUCIQD0987654321..."
-    }
-  ]
+  "proposeId": "550E8400-E29B-41D4-A716-446655440000",
+  "contentHash": "abc123def456",
+  "creatorPublicKey": "BHqG...",
+  "creatorSignature": "MEUC...",
+  "counterpartyPublicKey": "BIrH...",
+  "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
 
-### レスポンス
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `proposeId` | string | ✅ | UUID string (client-generated) |
+| `contentHash` | string | ✅ | Hash of the content |
+| `creatorPublicKey` | string | ✅ | Creator's public key |
+| `creatorSignature` | string | ✅ | Creator's signature |
+| `counterpartyPublicKey` | string | ✅ | Counterparty's public key |
+| `createdAt` | string | ✅ | ISO8601 creation timestamp |
 
-#### 成功時 (200 OK)
+### Responses
 
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "payloadHash": "abc123def456",
-  "signatureCount": 2,
-  "updatedAt": "2026-03-11T10:35:00Z"
-}
-```
-
-#### エラー時
-
-##### 400 Bad Request
-
-```json
-{
-  "error": "Invalid UUID format"
-}
-```
-
-パスのUUID形式が無効です。または入力値が検証ルールに違反しています。
-
-##### 401 Unauthorized
-
-```json
-{
-  "error": "Invalid signature for given payload hash"
-}
-```
-
-提供されたいずれかの署名がpayloadHashに対して無効です。
-
-##### 404 Not Found
-
-```json
-{
-  "error": "Propose not found"
-}
-```
-
-指定されたIDのProposeが存在しません。
+| Status | Description |
+|---|---|
+| 201 Created | Propose created successfully |
+| 400 | Invalid `proposeId` format |
+| 401 | Signature verification failed |
+| 409 Conflict | A Propose with the same ID already exists |
 
 ---
 
-## エラーコード一覧
+## 3. GET /proposes/:id — Get Propose Details
 
-| HTTP Status | 説明 |
-|-------------|------|
-| 201 | Propose作成成功 |
-| 200 | 署名追加成功 |
-| 400 | リクエストが無効（入力値検証エラー、無効なUUID形式） |
-| 401 | 署名検証に失敗 |
-| 404 | Proposeが見つからない |
+### Request Example
 
----
+```
+GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
+```
 
-## 検証ルール
+### Response (200 OK)
 
-このAPIには以下の検証ルールがあります：
+Returns a Propose object (see Data Model above).
 
-### payloadHash
-- **最小文字数**: 1
-- **最大文字数**: 256
+### Errors
 
-### signatures配列
-- **最小個数**: 1
-- **最大個数**: 1000
-
-### publicKey
-- **最大文字数**: 500
-- **形式**: Base64エンコード
-- **対応形式**: P256 X.963形式
-
-### signature
-- **最大文字数**: 500
-- **形式**: Base64エンコード（DER形式）
-
-### 署名の有効性
-- 提供されたすべての署名がpayloadHashに対して有効であることが必須です
-- 署名はP256の秘密鍵で生成される必要があります
+| Status | Reason |
+|---|---|
+| 400 | Invalid UUID format |
+| 404 | Propose not found |
 
 ---
 
-## 使用例
+## 4. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed)
 
-### cURL での例
+The counterparty signs `proposeId + contentHash + counterpartyPublicKey + createdAt`, transitioning the Propose to `signed` state.
 
-#### 1. Proposeを作成する
+### Request Body
+
+```json
+{
+  "counterpartySignature": "MEUC...",
+  "createdAt": "2026-01-01T00:00:00Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `counterpartySignature` | string | ✅ | Counterparty's signature |
+| `createdAt` | string | ✅ | Must match the Propose's `createdAt` |
+
+### Responses
+
+| Status | Description |
+|---|---|
+| 200 OK | Signed successfully; transitions to `signed` |
+| 400 | `createdAt` mismatch or invalid UUID |
+| 401 | Signature verification failed |
+| 404 | Propose not found |
+| 409 Conflict | Propose is not in `proposed` state |
+
+---
+
+## 5. DELETE /proposes/:id — Dissolve (proposed → dissolved)
+
+Either the creator or counterparty signs `"dissolved." + proposeId + contentHash + timestamp` to dissolve the Propose. Only allowed from `proposed` state.
+
+### Request Body
+
+```json
+{
+  "publicKey": "BHqG...",
+  "signature": "MEUC...",
+  "timestamp": "2026-01-02T00:00:00Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `publicKey` | string | ✅ | Requester's public key (creator or counterparty) |
+| `signature` | string | ✅ | Requester's signature |
+| `timestamp` | string | ✅ | Operation timestamp (ISO8601) |
+
+### Responses
+
+| Status | Description |
+|---|---|
+| 200 OK | Dissolved successfully; transitions to `dissolved` |
+| 401 | Signature verification failed |
+| 403 Forbidden | Public key does not belong to a participant |
+| 404 | Propose not found |
+| 409 Conflict | Propose is not in `proposed` state |
+
+---
+
+## 6. PATCH /proposes/:id/honor — Submit Honor Signature (signed → honored)
+
+Each party signs `"honored." + proposeId + contentHash + timestamp`. Once both parties have submitted, the Propose automatically transitions to `honored`.
+
+### Request Body
+
+```json
+{
+  "publicKey": "BHqG...",
+  "signature": "MEUC...",
+  "timestamp": "2026-01-03T00:00:00Z"
+}
+```
+
+### Responses
+
+| Status | Description |
+|---|---|
+| 200 OK | Signature recorded; transitions to `honored` when both are submitted |
+| 401 | Signature verification failed |
+| 403 Forbidden | Public key does not belong to a participant |
+| 404 | Propose not found |
+| 409 Conflict | Propose is not in `signed` state |
+
+---
+
+## 7. PATCH /proposes/:id/part — Submit Part Signature (signed → parted)
+
+Each party signs `"parted." + proposeId + contentHash + timestamp`. Once both parties have submitted, the Propose automatically transitions to `parted`.
+
+### Request Body
+
+```json
+{
+  "publicKey": "BHqG...",
+  "signature": "MEUC...",
+  "timestamp": "2026-01-03T00:00:00Z"
+}
+```
+
+### Responses
+
+| Status | Description |
+|---|---|
+| 200 OK | Signature recorded; transitions to `parted` when both are submitted |
+| 401 | Signature verification failed |
+| 403 Forbidden | Public key does not belong to a participant |
+| 404 | Propose not found |
+| 409 Conflict | Propose is not in `signed` state |
+
+---
+
+## Rate Limiting
+
+Rate limiting is applied to all endpoints.
+
+| Header | Description |
+|---|---|
+| `X-RateLimit-Limit` | Maximum requests allowed (60/min) |
+| `X-RateLimit-Remaining` | Remaining requests in current window |
+| `X-RateLimit-Reset` | Unix timestamp when the limit resets |
+| `Retry-After` | Seconds until retry is allowed (when limited) |
+
+Response when limit is exceeded: **429 Too Many Requests**
+
+---
+
+## cURL Examples
+
+### Create a Propose
 
 ```bash
-curl -X POST http://localhost:8080/proposes \
+curl -X POST http://localhost:8080/v1/proposes \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "payloadHash": "abc123def456",
-    "signatures": [
-      {
-        "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-        "signature": "MEUCIQD1234567890..."
-      }
-    ]
+    "proposeId": "550E8400-E29B-41D4-A716-446655440000",
+    "contentHash": "abc123def456",
+    "creatorPublicKey": "BHqG...",
+    "creatorSignature": "MEUC...",
+    "counterpartyPublicKey": "BIrH...",
+    "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```
 
-#### 2. 署名を追加する
+### Sign (counterparty)
 
 ```bash
-curl -X PUT http://localhost:8080/proposes/550e8400-e29b-41d4-a716-446655440000 \
+curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/sign \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "payloadHash": "abc123def456",
-    "signatures": [
-      {
-        "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-        "signature": "MEUCIQD1234567890..."
-      },
-      {
-        "publicKey": "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-        "signature": "MEUCIQD0987654321..."
-      }
-    ]
+    "counterpartySignature": "MEUC...",
+    "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```
 
-### Swift での例
+### Dissolve
 
-```swift
-import Foundation
+```bash
+curl -X DELETE http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "publicKey": "BHqG...",
+    "signature": "MEUC...",
+    "timestamp": "2026-01-02T00:00:00Z"
+  }'
+```
 
-// Proposeを作成
-let propose = ProposeInput(
-  id: UUID(),
-  payloadHash: "abc123def456",
-  signatures: [
-    SignatureInput(
-      publicKey: "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0K...",
-      signature: "MEUCIQD1234567890..."
-    )
-  ]
-)
+### Submit Honor Signature
 
-var request = URLRequest(url: URL(string: "http://localhost:8080/proposes")!)
-request.httpMethod = "POST"
-request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-request.httpBody = try JSONEncoder().encode(propose)
-
-let (data, response) = try await URLSession.shared.data(for: request)
-print(String(data: data, encoding: .utf8) ?? "")
+```bash
+curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/honor \
+  -H "Content-Type: application/json" \
+  -d '{
+    "publicKey": "BHqG...",
+    "signature": "MEUC...",
+    "timestamp": "2026-01-03T00:00:00Z"
+  }'
 ```
 
 ---
 
-## 注意事項
-
-### セキュリティ
-
-- 現在、このAPIには認証機構がありません
-- 本番環境での使用前に、適切な認証・認可機構を実装してください
-- HTTPS を使用してください
-- レート制限を実装することを推奨します
-
-### 署名の生成
-
-- P256 秘密鍵で `payloadHash` に署名してください
-- 署名はDER形式でBase64エンコードしてください
-- 公開鍵はX.963形式（65バイト）でBase64エンコードしてください
-
-### 同じ公開鍵での複数署名
-
-- 同じ公開鍵で複数の署名を追加することが可能です
-- 各署名は独立して検証されます
-
----
-
-## バージョン
+## Version
 
 API Version: 1.0.0
-
-最終更新: 2026-03-11
+Last updated: 2026-03-15

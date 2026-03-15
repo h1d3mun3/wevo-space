@@ -1,33 +1,35 @@
 # PostgreSQL Setup Guide
 
-WevoSpaceは開発環境ではSQLite、本番環境ではPostgreSQLを使用します。
+WevoSpace uses SQLite in development and PostgreSQL in production.
 
-## 📋 目次
+> 日本語版: [POSTGRESQL_SETUP_ja.md](POSTGRESQL_SETUP_ja.md)
 
-1. [開発環境（SQLite）](#開発環境sqlite)
-2. [ローカルPostgreSQL](#ローカルpostgresql)
-3. [本番環境（PostgreSQL）](#本番環境postgresql)
+## 📋 Table of Contents
+
+1. [Development (SQLite)](#development-sqlite)
+2. [Local PostgreSQL](#local-postgresql)
+3. [Production (PostgreSQL)](#production-postgresql)
 4. [Docker Compose](#docker-compose)
-5. [マイグレーション](#マイグレーション)
+5. [Migrations](#migrations)
 
 ---
 
-## 開発環境（SQLite）
+## Development (SQLite)
 
-デフォルトでは、開発環境でSQLiteを使用します。環境変数の設定は不要です。
+By default, SQLite is used in development. No environment variables needed.
 
 ```bash
-# アプリケーションを起動
+# Start the application
 swift run
 
-# 自動的に db.sqlite ファイルが作成されます
+# db.sqlite is created automatically
 ```
 
 ---
 
-## ローカルPostgreSQL
+## Local PostgreSQL
 
-### 1. PostgreSQLのインストール
+### 1. Install PostgreSQL
 
 #### macOS (Homebrew)
 ```bash
@@ -42,31 +44,25 @@ sudo apt install postgresql postgresql-contrib
 sudo systemctl start postgresql
 ```
 
-### 2. データベースとユーザーの作成
+### 2. Create Database and User
 
 ```bash
-# PostgreSQLに接続
+# Connect to PostgreSQL
 psql postgres
 
-# データベースとユーザーを作成
+# Create database and user
 CREATE USER vapor WITH PASSWORD 'password';
 CREATE DATABASE wevospace OWNER vapor;
 GRANT ALL PRIVILEGES ON DATABASE wevospace TO vapor;
 
-# 接続確認
+# Verify connection
 \q
 psql -U vapor -d wevospace
 ```
 
-### 3. 環境変数の設定
+### 3. Configure Environment Variables
 
-`.env.example` をコピーして `.env` を作成：
-
-```bash
-cp .env.example .env
-```
-
-`.env` ファイルを編集：
+Create a `.env` file:
 
 ```bash
 DATABASE_HOST=localhost
@@ -76,31 +72,31 @@ DATABASE_PASSWORD=password
 DATABASE_NAME=wevospace
 ```
 
-### 4. アプリケーションの起動
+### 4. Start the Application
 
 ```bash
-# マイグレーション実行
+# Run migrations
 swift run WevoSpace migrate
 
-# サーバー起動
+# Start server
 swift run
 ```
 
 ---
 
-## 本番環境（PostgreSQL）
+## Production (PostgreSQL)
 
-### 環境変数の設定方法
+### Configuration Options
 
-#### Option 1: DATABASE_URL を使用（推奨）
+#### Option 1: DATABASE_URL (recommended)
 
-Heroku、Railway、Render などのクラウドプラットフォームで一般的：
+Common on cloud platforms like Heroku, Railway, and Render:
 
 ```bash
 export DATABASE_URL="postgres://username:password@hostname:5432/database"
 ```
 
-#### Option 2: 個別の環境変数
+#### Option 2: Individual Environment Variables
 
 ```bash
 export DATABASE_HOST="your-postgres-host.com"
@@ -111,23 +107,18 @@ export DATABASE_NAME="wevospace"
 export ENVIRONMENT="production"
 ```
 
-### マイグレーション
+### Migrations
 
 ```bash
-# 本番環境でマイグレーション実行
+# Run migrations in production
 ./WevoSpace migrate --env production
-
-# または
-swift run WevoSpace migrate --env production
 ```
 
 ---
 
 ## Docker Compose
 
-ローカル開発用のDocker Compose設定：
-
-### docker-compose.yml
+Docker Compose configuration for local development:
 
 ```yaml
 version: '3.8'
@@ -154,70 +145,85 @@ volumes:
   postgres_data:
 ```
 
-### 使用方法
+### Usage
 
 ```bash
-# PostgreSQLコンテナを起動
+# Start PostgreSQL container
 docker-compose up -d
 
-# ログ確認
+# View logs
 docker-compose logs -f postgres
 
-# 停止
+# Stop
 docker-compose down
 
-# データも削除する場合
+# Stop and remove volumes
 docker-compose down -v
 ```
 
 ---
 
-## マイグレーション
+## Migrations
 
-### マイグレーション実行
+### Run Migrations
 
 ```bash
-# 開発環境（SQLite）
+# Development (SQLite)
 swift run WevoSpace migrate
 
-# 本番環境（PostgreSQL）
+# Production (PostgreSQL)
 swift run WevoSpace migrate --env production
 ```
 
-### マイグレーション取り消し
+### Revert Migrations
 
 ```bash
-# 最後のマイグレーションを取り消し
+# Revert last migration
 swift run WevoSpace migrate --revert
 
-# すべてのマイグレーションを取り消し
+# Revert all migrations
 swift run WevoSpace migrate --revert --all
 ```
 
-### マイグレーション状態確認
+### Inspect Schema
 
 ```bash
-# データベース接続（SQLite）
+# SQLite
 sqlite3 db.sqlite
 .tables
 .schema proposes
-.schema signatures
 
-# データベース接続（PostgreSQL）
+# PostgreSQL
 psql -U vapor -d wevospace
 \dt
 \d proposes
-\d signatures
 ```
+
+### proposes Table Schema
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID | PK (client-generated) |
+| `content_hash` | TEXT | Hash of the content |
+| `creator_public_key` | TEXT | Creator's public key |
+| `creator_signature` | TEXT | Creator's signature |
+| `counterparty_public_key` | TEXT | Counterparty's public key |
+| `counterparty_signature` | TEXT? | Counterparty's signature |
+| `honor_creator_signature` | TEXT? | Creator's honor signature |
+| `honor_counterparty_signature` | TEXT? | Counterparty's honor signature |
+| `part_creator_signature` | TEXT? | Creator's part signature |
+| `part_counterparty_signature` | TEXT? | Counterparty's part signature |
+| `status` | TEXT | State (proposed/signed/honored/dissolved/parted) |
+| `created_at` | TEXT | Creation timestamp (ISO8601, client-generated) |
+| `updated_at` | DATETIME? | Last updated timestamp (server-managed) |
 
 ---
 
-## トラブルシューティング
+## Troubleshooting
 
-### PostgreSQL接続エラー
+### PostgreSQL Connection Error
 
 ```bash
-# PostgreSQLが起動しているか確認
 # macOS
 brew services list
 
@@ -228,65 +234,53 @@ sudo systemctl status postgresql
 docker-compose ps
 ```
 
-### 認証エラー
+### Authentication Error
 
 ```bash
-# PostgreSQLの認証設定を確認
+# Check PostgreSQL authentication config
 sudo nano /etc/postgresql/15/main/pg_hba.conf
-
-# ローカル接続は以下の設定を推奨：
-# local   all             all                                     trust
-# host    all             all             127.0.0.1/32            md5
 ```
 
-### ポート競合
+### Migration Error
 
 ```bash
-# PostgreSQLが使用しているポートを確認
-lsof -i :5432
-
-# 別のポートを使用する場合は .env を編集
-DATABASE_PORT=5433
+# Reset and re-run all migrations
+swift run WevoSpace migrate --revert --all
+swift run WevoSpace migrate
 ```
 
 ---
 
-## データベース切り替えの確認
+## Startup Log
 
-アプリケーション起動時のログで使用しているデータベースを確認できます：
+The application logs which database is in use at startup:
 
 ```
 # SQLite
 [ INFO ] Using SQLite database (development mode)
 
-# PostgreSQL（DATABASE_URL）
+# PostgreSQL (DATABASE_URL)
 [ INFO ] Using PostgreSQL database from DATABASE_URL
 
-# PostgreSQL（個別設定）
+# PostgreSQL (individual variables)
 [ INFO ] Using PostgreSQL database: localhost:5432/wevospace
 ```
 
 ---
 
-## セキュリティ注意事項
+## Security Notes
 
-### 本番環境
+### Production
 
-1. ✅ 強力なパスワードを使用
-2. ✅ TLS/SSL接続を有効化
-3. ✅ ファイアウォールでデータベースポートを制限
-4. ✅ `.env` ファイルをバージョン管理から除外（`.gitignore`に追加済み）
-5. ✅ データベースユーザーの権限を最小限に
-
-### 開発環境
-
-1. ⚠️ デフォルトパスワードを変更
-2. ⚠️ 外部ネットワークからのアクセスを制限
-3. ✅ `.env` ファイルをバージョン管理から除外
+1. ✅ Use strong passwords
+2. ✅ Enable TLS/SSL connections
+3. ✅ Restrict database port with a firewall
+4. ✅ Exclude `.env` from version control
+5. ✅ Grant minimum necessary privileges to the database user
 
 ---
 
-## 参考リンク
+## References
 
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
 - [Vapor Database Documentation](https://docs.vapor.codes/fluent/overview/)

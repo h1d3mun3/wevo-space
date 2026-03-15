@@ -2,70 +2,81 @@
 
 💧 A project built with the Vapor web framework.
 
+An API server for recording and managing two-party agreements with cryptographic signatures.
+
+> 日本語版: [README_ja.md](README_ja.md)
+
 ## Features
 
 ### 🔒 Security
-- **Rate Limiting**: 60 requests per minute per IP address
-- **Request Size Limiting**: Maximum 1MB per request
-- **Field Size Validation**: 
-  - Payload hash: 256 characters max
-  - Signatures per request: 1000 max
-  - Public key: 500 characters max
-  - Signature data: 500 characters max
-- **Cryptographic Signatures**: P-256 ECDSA signature verification
-- **Input Validation**: Comprehensive validation of all inputs
-- **Immutable Data**: Append-only architecture for proposals
+- **Signature Verification**: All state transitions are secured by P-256 ECDSA verification
+- **Rate Limiting**: 60 requests/minute per IP address
+- **Request Size Limit**: 1 MB max per request
+- **Duplicate Check**: Prevents duplicate Propose IDs
 
 ### 📡 API Endpoints
 
-#### Proposes
-- `POST /proposes` - Create a new proposal with signatures
-- `PUT /proposes/:id` - Add signatures to existing proposal
-- `GET /proposes/:id` - Get proposal details
-- `GET /proposes?publicKey=xxx` - List proposals by public key
+All endpoints are prefixed with `/v1`.
 
-All API responses include rate limit headers:
-- `X-RateLimit-Limit`: Maximum requests allowed
-- `X-RateLimit-Remaining`: Remaining requests in current window
-- `X-RateLimit-Reset`: Unix timestamp when the limit resets
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/v1/proposes` | List proposes (filter by publicKey and status) |
+| `POST` | `/v1/proposes` | Create a propose |
+| `GET` | `/v1/proposes/:id` | Get propose details |
+| `PATCH` | `/v1/proposes/:id/sign` | Counterparty signs (proposed → signed) |
+| `DELETE` | `/v1/proposes/:id` | Dissolve (proposed → dissolved) |
+| `PATCH` | `/v1/proposes/:id/honor` | Honor signature (signed → honored) |
+| `PATCH` | `/v1/proposes/:id/part` | Part signature (signed → parted) |
 
-When rate limit is exceeded, the API returns:
-- Status: `429 Too Many Requests`
-- Header: `Retry-After` - Seconds until retry is allowed
+### State Transitions
+
+```
+proposed ──sign──→ signed ──honor (both)──→ honored
+    │                 │
+  dissolve          part (both)
+    │                 │
+    ↓                 ↓
+dissolved           parted
+```
+
+Rate limit headers:
+- `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`
+- On limit exceeded: `429 Too Many Requests` + `Retry-After`
+
+See [docs/PROPOSE_API.md](docs/PROPOSE_API.md) / [docs/PROPOSE_API_ja.md](docs/PROPOSE_API_ja.md) for full documentation.
+
+---
 
 ## Getting Started
 
 ### Prerequisites
 
 - Swift 6.0 or later
-- PostgreSQL 12+ (for production)
+- PostgreSQL 12+ (production)
 - Docker & Docker Compose (optional, for local PostgreSQL)
 
 ### Database Setup
 
-WevoSpace supports both SQLite (development) and PostgreSQL (production).
+WevoSpace uses SQLite in development and PostgreSQL in production.
 
-#### Development (SQLite - Default)
+#### Development (SQLite — default)
 
-No setup required! The app uses SQLite by default:
+No configuration needed.
 
 ```bash
 swift run
-# Automatically creates db.sqlite
+# db.sqlite is created automatically
 ```
 
 #### Production (PostgreSQL)
 
-See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for detailed instructions.
+See [POSTGRESQL_SETUP.md](Sources/WevoSpace/POSTGRESQL_SETUP.md) for details.
 
 Quick start with Docker:
 
 ```bash
 # Start PostgreSQL
 docker-compose up -d postgres
-
-# Copy environment variables
-cp .env.example .env
 
 # Run migrations
 swift run WevoSpace migrate
@@ -74,98 +85,88 @@ swift run WevoSpace migrate
 swift run
 ```
 
-### Build and Run
+### Build & Run
 
-To build the project using the Swift Package Manager, run the following command in the terminal from the root of the project:
 ```bash
+# Build
 swift build
-```
 
-To run the project and start the server, use the following command:
-```bash
+# Start server
 swift run
-```
 
-To execute tests, use the following command:
-```bash
+# Run tests
 swift test
 ```
+
+---
 
 ## Configuration
 
 ### Environment Variables
 
-Create a `.env` file from the example:
-
 ```bash
-cp .env.example .env
-```
-
-Key configuration options:
-
-```bash
-# PostgreSQL (Production)
+# PostgreSQL (production)
 DATABASE_URL=postgres://username:password@localhost:5432/wevospace
 
-# Or use individual variables
+# Or individual variables
 DATABASE_HOST=localhost
 DATABASE_PORT=5432
 DATABASE_USERNAME=vapor
 DATABASE_PASSWORD=password
 DATABASE_NAME=wevospace
-
-# Environment
-ENVIRONMENT=production  # or development
 ```
 
 ### Rate Limiting
 
-Rate limiting can be configured in `configure.swift`:
+Configurable in `configure.swift`:
 
 ```swift
-// Rate Limiting: 60 requests per 60 seconds (1 minute)
-app.middleware.use(RateLimitMiddleware(maxRequests: 60, windowSeconds: 60))
-
-// Request size limit: 1MB
+app.middleware.use(RateLimitMiddleware(requestLimit: 60, timeWindow: 60))
 app.routes.defaultMaxBodySize = "1mb"
 ```
 
-### Field Size Limits
-
-Field size limits are enforced in `ProposeController`:
-- `payloadHash`: 256 characters maximum
-- `signatures`: 1000 signatures per request maximum
-- `publicKey`: 500 characters maximum (Base64 encoded)
-- `signature`: 500 characters maximum (Base64 encoded)
+---
 
 ## Architecture
 
 ### Database
 
-- **Development**: SQLite (automatic, no setup required)
+- **Development**: SQLite (no configuration required)
 - **Production**: PostgreSQL (recommended)
 
-The application automatically selects the database based on environment:
-- SQLite: Used when no `DATABASE_URL` or production environment variables are set
-- PostgreSQL: Used when `DATABASE_URL` or PostgreSQL environment variables are configured
+Switches automatically based on environment.
 
-See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for migration and setup instructions.
+### Data Model
 
-### Data Models
-- **Propose**: Contains payload hash and creation timestamp
-- **Signature**: Contains public key and signature data linked to a Propose
+**Propose** — the core entity for two-party agreements
 
-### Security Features
-1. All signatures are cryptographically verified using P-256 ECDSA
-2. Proposals are immutable - payload hash cannot be changed
-3. Signatures are append-only - cannot be deleted or modified
-4. Rate limiting prevents abuse and DoS attacks (60 requests/minute)
-5. Request size limiting prevents memory exhaustion attacks (1MB max)
-6. Individual field size validation prevents malformed data
+| Field | Description |
+|---|---|
+| `contentHash` | Hash of the content |
+| `creatorPublicKey` / `creatorSignature` | Creator's key and signature |
+| `counterpartyPublicKey` / `counterpartySignature` | Counterparty's key and signature |
+| `honorCreator/CounterpartySignature` | Honor signatures (both parties) |
+| `partCreator/CounterpartySignature` | Part signatures (both parties) |
+| `status` | Current state |
+| `createdAt` | Creation timestamp (client-generated) |
+| `updatedAt` | Last updated timestamp (server-managed) |
 
-### See more
+### Security Principles
+
+1. All state transitions are secured by P-256 ECDSA signature verification
+2. No authentication tokens — the public key proves participation via signature
+3. Server handles only stateless verification
+
+---
+
+## API Documentation
+
+- English: [docs/PROPOSE_API.md](docs/PROPOSE_API.md)
+- 日本語: [docs/PROPOSE_API_ja.md](docs/PROPOSE_API_ja.md)
+- OpenAPI (English): [api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml)
+- OpenAPI (日本語): [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
+
+## References
 
 - [Vapor Website](https://vapor.codes)
 - [Vapor Documentation](https://docs.vapor.codes)
-- [Vapor GitHub](https://github.com/vapor)
-- [Vapor Community](https://github.com/vapor-community)
