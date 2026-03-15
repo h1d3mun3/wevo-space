@@ -71,7 +71,7 @@ struct RequestSizeLimitTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created, "通常サイズのリクエストは成功する")
@@ -98,7 +98,7 @@ struct RequestSizeLimitTests {
                 signatures: signatures
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created, "100個の署名でも1MB以内なら成功する")
@@ -126,7 +126,7 @@ struct RequestSizeLimitTests {
                 signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 // リクエストサイズ制限またはフィールドバリデーションで拒否される
@@ -150,7 +150,7 @@ struct RequestSizeLimitTests {
                 signatures: [SignatureInput(publicKey: hugePublicKey, signature: "test")]
             )
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 // リクエストサイズ制限またはフィールドバリデーションで拒否される
@@ -186,7 +186,7 @@ struct RequestSizeLimitTests {
             let sizeInMB = Double(data.count) / 1_048_576.0
             print("リクエストサイズ: \(sizeInMB) MB")
             
-            try await app.testing().test(.POST, "proposes", beforeRequest: { req in
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 // 1MB以内なら成功、超えていれば400または413エラー
