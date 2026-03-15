@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Propose is a mechanism for recording and managing two-party agreements with cryptographic signatures. Two parties are involved: the **creator** and the **counterparty**. All state transitions are secured by signature verification — no authentication tokens are required.
+A Propose is a mechanism for recording and managing multi-party agreements with cryptographic signatures. One **creator** and one or more **counterparties** are involved. All state transitions are secured by signature verification — no authentication tokens are required.
 
 **Base URL**:
 - Development: `http://localhost:8080/v1`
@@ -12,43 +12,49 @@ A Propose is a mechanism for recording and managing two-party agreements with cr
 
 ## Data Model
 
-### Propose
+### ProposeResponse
 
 | Field | Type | Description |
 |---|---|---|
 | `id` | UUID | Propose ID (client-generated) |
 | `contentHash` | string | Hash of the content |
-| `creatorPublicKey` | string | Creator's public key (Base64 / DER) |
+| `creatorPublicKey` | string | Creator's public key (Base64 / X.963) |
 | `creatorSignature` | string | Creator's signature (Base64 / DER) |
-| `counterpartyPublicKey` | string | Counterparty's public key (Base64 / DER) |
-| `counterpartySignature` | string? | Counterparty's signature (set after signing) |
+| `counterparties` | CounterpartyInfo[] | List of counterparties and their signatures |
 | `honorCreatorSignature` | string? | Creator's honor signature |
-| `honorCounterpartySignature` | string? | Counterparty's honor signature |
 | `partCreatorSignature` | string? | Creator's part signature |
-| `partCounterpartySignature` | string? | Counterparty's part signature |
 | `status` | string | Current status (see below) |
 | `createdAt` | string | Creation timestamp (ISO8601, client-generated) |
-| `updatedAt` | string | Last updated timestamp (server-managed) |
+| `updatedAt` | string? | Last updated timestamp (server-managed) |
+
+### CounterpartyInfo
+
+| Field | Type | Description |
+|---|---|---|
+| `publicKey` | string | Counterparty's public key (Base64 / X.963) |
+| `signSignature` | string? | Signature for `/sign` (set after signing) |
+| `honorSignature` | string? | Signature for `/honor` |
+| `partSignature` | string? | Signature for `/part` |
 
 ### Status Values
 
 | status | Meaning |
 |---|---|
-| `proposed` | Created by creator, awaiting counterparty signature |
-| `signed` | Counterparty signed; agreement established |
-| `honored` | Both parties submitted honor signatures |
+| `proposed` | Created by creator, awaiting all counterparty signatures |
+| `signed` | All counterparties signed; agreement established |
+| `honored` | Creator + all counterparties submitted honor signatures |
 | `dissolved` | Dissolved from `proposed` state |
-| `parted` | Both parties submitted part signatures |
+| `parted` | Creator + all counterparties submitted part signatures |
 
 ### State Transition Diagram
 
 ```
-proposed ──sign──→ signed ──honor (both)──→ honored
-    │                 │
-  dissolve         part (both)
-    │                 │
-    ↓                 ↓
-dissolved           parted
+proposed ──sign (all counterparties)──→ signed ──honor (all)──→ honored
+    │                                      │
+  dissolve                              part (all)
+    │                                      │
+    ↓                                      ↓
+dissolved                               parted
 ```
 
 ---
@@ -65,12 +71,15 @@ The string to sign for each operation is formed by concatenating the following f
 
 | Operation | Message |
 |---|---|
-| Create / sign | `proposeId + contentHash + counterpartyPublicKey + createdAt` |
-| dissolved | `"dissolved." + proposeId + contentHash + timestamp` |
-| honored | `"honored." + proposeId + contentHash + timestamp` |
-| parted | `"parted." + proposeId + contentHash + timestamp` |
+| Create | `proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt` |
+| sign | `proposeId + contentHash + signerPublicKey + createdAt` |
+| dissolve | `"dissolved." + proposeId + contentHash + timestamp` |
+| honor | `"honored." + proposeId + contentHash + timestamp` |
+| part | `"parted." + proposeId + contentHash + timestamp` |
 
 > **Note**: Use the uppercase UUID string format for `proposeId` (e.g., `550E8400-E29B-41D4-A716-446655440000`).
+>
+> For **create**, sort `counterpartyPublicKeys` lexicographically and join them (no separator) before signing.
 
 ---
 
@@ -81,22 +90,22 @@ The string to sign for each operation is formed by concatenating the following f
 | `GET` | `/proposes` | List proposes |
 | `POST` | `/proposes` | Create a propose |
 | `GET` | `/proposes/:id` | Get propose details |
-| `PATCH` | `/proposes/:id/sign` | Counterparty signs (proposed → signed) |
+| `PATCH` | `/proposes/:id/sign` | A counterparty signs (auto-transitions to `signed` when all have signed) |
 | `DELETE` | `/proposes/:id` | Dissolve (proposed → dissolved) |
-| `PATCH` | `/proposes/:id/honor` | Submit honor signature (signed → honored) |
-| `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted) |
+| `PATCH` | `/proposes/:id/honor` | Submit honor signature (signed → honored when all submitted) |
+| `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted when all submitted) |
 
 ---
 
 ## 1. GET /proposes — List Proposes
 
-Returns proposes where the specified public key is either the creator or the counterparty.
+Returns proposes where the specified public key is either the creator or one of the counterparties.
 
 ### Query Parameters
 
 | Parameter | Required | Description |
 |---|---|---|
-| `publicKey` | ✅ | Public key to search by (Base64 / DER) |
+| `publicKey` | ✅ | Public key to search by (Base64 / X.963) |
 | `status` | ✗ | Filter by status (comma-separated for multiple) |
 | `page` | ✗ | Page number (default: 1) |
 | `per` | ✗ | Items per page (default: 10) |
@@ -117,12 +126,16 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
       "contentHash": "abc123def456",
       "creatorPublicKey": "BHqG...",
       "creatorSignature": "MEUC...",
-      "counterpartyPublicKey": "BIrH...",
-      "counterpartySignature": null,
+      "counterparties": [
+        {
+          "publicKey": "BIrH...",
+          "signSignature": null,
+          "honorSignature": null,
+          "partSignature": null
+        }
+      ],
       "honorCreatorSignature": null,
-      "honorCounterpartySignature": null,
       "partCreatorSignature": null,
-      "partCounterpartySignature": null,
       "status": "proposed",
       "createdAt": "2026-01-01T00:00:00Z",
       "updatedAt": "2026-01-01T00:00:00Z"
@@ -146,7 +159,7 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
 
 ## 2. POST /proposes — Create a Propose
 
-The creator creates a new Propose. The creator signs `proposeId + contentHash + counterpartyPublicKey + createdAt`.
+The creator creates a new Propose. Sign `proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt`.
 
 ### Request Body
 
@@ -156,7 +169,7 @@ The creator creates a new Propose. The creator signs `proposeId + contentHash + 
   "contentHash": "abc123def456",
   "creatorPublicKey": "BHqG...",
   "creatorSignature": "MEUC...",
-  "counterpartyPublicKey": "BIrH...",
+  "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
   "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
@@ -167,7 +180,7 @@ The creator creates a new Propose. The creator signs `proposeId + contentHash + 
 | `contentHash` | string | ✅ | Hash of the content |
 | `creatorPublicKey` | string | ✅ | Creator's public key |
 | `creatorSignature` | string | ✅ | Creator's signature |
-| `counterpartyPublicKey` | string | ✅ | Counterparty's public key |
+| `counterpartyPublicKeys` | string[] | ✅ | Counterparty public keys (1 or more) |
 | `createdAt` | string | ✅ | ISO8601 creation timestamp |
 
 ### Responses
@@ -175,7 +188,7 @@ The creator creates a new Propose. The creator signs `proposeId + contentHash + 
 | Status | Description |
 |---|---|
 | 201 Created | Propose created successfully |
-| 400 | Invalid `proposeId` format |
+| 400 | Invalid `proposeId` format, or `counterpartyPublicKeys` is empty |
 | 401 | Signature verification failed |
 | 409 Conflict | A Propose with the same ID already exists |
 
@@ -191,7 +204,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ### Response (200 OK)
 
-Returns a Propose object (see Data Model above).
+Returns a `ProposeResponse` object (see Data Model above).
 
 ### Errors
 
@@ -202,31 +215,35 @@ Returns a Propose object (see Data Model above).
 
 ---
 
-## 4. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed)
+## 4. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed when all done)
 
-The counterparty signs `proposeId + contentHash + counterpartyPublicKey + createdAt`, transitioning the Propose to `signed` state.
+A counterparty signs `proposeId + contentHash + signerPublicKey + createdAt`.
+The Propose transitions to `signed` automatically once **all** counterparties have signed.
 
 ### Request Body
 
 ```json
 {
-  "counterpartySignature": "MEUC...",
+  "signerPublicKey": "BIrH...",
+  "signature": "MEUC...",
   "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `counterpartySignature` | string | ✅ | Counterparty's signature |
+| `signerPublicKey` | string | ✅ | Signer's public key (must be a registered counterparty) |
+| `signature` | string | ✅ | Signer's signature |
 | `createdAt` | string | ✅ | Must match the Propose's `createdAt` |
 
 ### Responses
 
 | Status | Description |
 |---|---|
-| 200 OK | Signed successfully; transitions to `signed` |
+| 200 OK | Signed successfully; transitions to `signed` when all counterparties have signed |
 | 400 | `createdAt` mismatch or invalid UUID |
 | 401 | Signature verification failed |
+| 403 Forbidden | `signerPublicKey` is not a registered counterparty |
 | 404 | Propose not found |
 | 409 Conflict | Propose is not in `proposed` state |
 
@@ -234,7 +251,7 @@ The counterparty signs `proposeId + contentHash + counterpartyPublicKey + create
 
 ## 5. DELETE /proposes/:id — Dissolve (proposed → dissolved)
 
-Either the creator or counterparty signs `"dissolved." + proposeId + contentHash + timestamp` to dissolve the Propose. Only allowed from `proposed` state.
+The creator or any counterparty signs `"dissolved." + proposeId + contentHash + timestamp` to dissolve. Only allowed from `proposed` state.
 
 ### Request Body
 
@@ -266,7 +283,7 @@ Either the creator or counterparty signs `"dissolved." + proposeId + contentHash
 
 ## 6. PATCH /proposes/:id/honor — Submit Honor Signature (signed → honored)
 
-Each party signs `"honored." + proposeId + contentHash + timestamp`. Once both parties have submitted, the Propose automatically transitions to `honored`.
+Each participant signs `"honored." + proposeId + contentHash + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `honored`.
 
 ### Request Body
 
@@ -282,7 +299,7 @@ Each party signs `"honored." + proposeId + contentHash + timestamp`. Once both p
 
 | Status | Description |
 |---|---|
-| 200 OK | Signature recorded; transitions to `honored` when both are submitted |
+| 200 OK | Signature recorded; transitions to `honored` when all participants have submitted |
 | 401 | Signature verification failed |
 | 403 Forbidden | Public key does not belong to a participant |
 | 404 | Propose not found |
@@ -292,7 +309,7 @@ Each party signs `"honored." + proposeId + contentHash + timestamp`. Once both p
 
 ## 7. PATCH /proposes/:id/part — Submit Part Signature (signed → parted)
 
-Each party signs `"parted." + proposeId + contentHash + timestamp`. Once both parties have submitted, the Propose automatically transitions to `parted`.
+Each participant signs `"parted." + proposeId + contentHash + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `parted`.
 
 ### Request Body
 
@@ -308,7 +325,7 @@ Each party signs `"parted." + proposeId + contentHash + timestamp`. Once both pa
 
 | Status | Description |
 |---|---|
-| 200 OK | Signature recorded; transitions to `parted` when both are submitted |
+| 200 OK | Signature recorded; transitions to `parted` when all participants have submitted |
 | 401 | Signature verification failed |
 | 403 Forbidden | Public key does not belong to a participant |
 | 404 | Propose not found |
@@ -333,7 +350,7 @@ Response when limit is exceeded: **429 Too Many Requests**
 
 ## cURL Examples
 
-### Create a Propose
+### Create a Propose (2 counterparties)
 
 ```bash
 curl -X POST http://localhost:8080/v1/proposes \
@@ -343,7 +360,7 @@ curl -X POST http://localhost:8080/v1/proposes \
     "contentHash": "abc123def456",
     "creatorPublicKey": "BHqG...",
     "creatorSignature": "MEUC...",
-    "counterpartyPublicKey": "BIrH...",
+    "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
     "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```
@@ -354,7 +371,8 @@ curl -X POST http://localhost:8080/v1/proposes \
 curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/sign \
   -H "Content-Type: application/json" \
   -d '{
-    "counterpartySignature": "MEUC...",
+    "signerPublicKey": "BIrH...",
+    "signature": "MEUC...",
     "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```

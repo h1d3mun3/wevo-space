@@ -4,7 +4,7 @@
 
 ## 概要
 
-Proposeは、2者間の合意を暗号署名で記録・管理する仕組みです。作成者（creator）と相手方（counterparty）の2者が関与し、署名によって状態遷移が担保されます。認証機構は設けず、すべての操作は署名検証によってセキュリティを確保します。
+Proposeは、多者間の合意を暗号署名で記録・管理する仕組みです。1人の作成者（creator）と1人以上の相手方（counterparty）が関与し、署名によって状態遷移が担保されます。認証機構は設けず、すべての操作は署名検証によってセキュリティを確保します。
 
 **ベースURL**:
 - 開発環境: `http://localhost:8080/v1`
@@ -14,43 +14,49 @@ Proposeは、2者間の合意を暗号署名で記録・管理する仕組みで
 
 ## データモデル
 
-### Propose
+### ProposeResponse
 
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `id` | UUID | Propose ID（クライアントが生成） |
 | `contentHash` | string | コンテンツのハッシュ値 |
-| `creatorPublicKey` | string | 作成者の公開鍵（Base64 / DER） |
+| `creatorPublicKey` | string | 作成者の公開鍵（Base64 / X.963） |
 | `creatorSignature` | string | 作成者の署名（Base64 / DER） |
-| `counterpartyPublicKey` | string | 相手方の公開鍵（Base64 / DER） |
-| `counterpartySignature` | string? | 相手方の署名（signed以降にセット） |
+| `counterparties` | CounterpartyInfo[] | 相手方と各署名のリスト |
 | `honorCreatorSignature` | string? | 作成者のhonor署名 |
-| `honorCounterpartySignature` | string? | 相手方のhonor署名 |
 | `partCreatorSignature` | string? | 作成者のpart署名 |
-| `partCounterpartySignature` | string? | 相手方のpart署名 |
 | `status` | string | 状態（下記参照） |
 | `createdAt` | string | 作成日時（ISO8601、クライアントが生成） |
-| `updatedAt` | string | 最終更新日時（サーバーが管理） |
+| `updatedAt` | string? | 最終更新日時（サーバーが管理） |
+
+### CounterpartyInfo
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `publicKey` | string | 相手方の公開鍵（Base64 / X.963） |
+| `signSignature` | string? | `/sign` の署名（署名後にセット） |
+| `honorSignature` | string? | `/honor` の署名 |
+| `partSignature` | string? | `/part` の署名 |
 
 ### 状態一覧
 
 | status | 意味 |
 |---|---|
-| `proposed` | 作成者が提案済み、相手方の署名待ち |
-| `signed` | 相手方が署名済み、合意成立 |
-| `honored` | 両者がhonor署名済み |
+| `proposed` | 作成者が提案済み、全相手方の署名待ち |
+| `signed` | 全相手方が署名済み、合意成立 |
+| `honored` | 作成者＋全相手方がhonor署名済み |
 | `dissolved` | 解消済み（proposed状態から） |
-| `parted` | 両者がpart署名済み |
+| `parted` | 作成者＋全相手方がpart署名済み |
 
 ### 状態遷移図
 
 ```
-proposed ──sign──→ signed ──honor（両者）──→ honored
-    │                 │
-  dissolve          part（両者）
-    │                 │
-    ↓                 ↓
-dissolved           parted
+proposed ──sign（全相手方）──→ signed ──honor（全員）──→ honored
+    │                             │
+  dissolve                     part（全員）
+    │                             │
+    ↓                             ↓
+dissolved                      parted
 ```
 
 ---
@@ -67,12 +73,15 @@ dissolved           parted
 
 | 操作 | 署名対象文字列 |
 |---|---|
-| Propose作成・sign | `proposeId + contentHash + counterpartyPublicKey + createdAt` |
+| Propose作成 | `proposeId + contentHash + counterpartyPublicKeys（ソート&結合） + createdAt` |
+| sign | `proposeId + contentHash + signerPublicKey + createdAt` |
 | dissolved | `"dissolved." + proposeId + contentHash + timestamp` |
 | honored | `"honored." + proposeId + contentHash + timestamp` |
 | parted | `"parted." + proposeId + contentHash + timestamp` |
 
 > **注意**: `proposeId` は大文字のUUID文字列（例: `550E8400-E29B-41D4-A716-446655440000`）を使用してください。
+>
+> **作成時**: `counterpartyPublicKeys` を辞書順でソートして連結（区切り文字なし）したものを使用します。
 
 ---
 
@@ -83,22 +92,22 @@ dissolved           parted
 | `GET` | `/proposes` | Propose一覧取得 |
 | `POST` | `/proposes` | Propose作成 |
 | `GET` | `/proposes/:id` | Propose詳細取得 |
-| `PATCH` | `/proposes/:id/sign` | 相手方が署名（proposed → signed） |
+| `PATCH` | `/proposes/:id/sign` | 相手方が署名（全員揃うと `signed` に自動遷移） |
 | `DELETE` | `/proposes/:id` | 解消（proposed → dissolved） |
-| `PATCH` | `/proposes/:id/honor` | honor署名を追加（signed → honored） |
-| `PATCH` | `/proposes/:id/part` | part署名を追加（signed → parted） |
+| `PATCH` | `/proposes/:id/honor` | honor署名を追加（全員揃うと `honored` に自動遷移） |
+| `PATCH` | `/proposes/:id/part` | part署名を追加（全員揃うと `parted` に自動遷移） |
 
 ---
 
 ## 1. GET /proposes — Propose一覧取得
 
-指定した公開鍵が creator または counterparty であるProposeを返します。
+指定した公開鍵が creator または いずれかの counterparty であるProposeを返します。
 
 ### クエリパラメータ
 
 | パラメータ | 必須 | 説明 |
 |---|---|---|
-| `publicKey` | ✅ | 検索する公開鍵（Base64 / DER） |
+| `publicKey` | ✅ | 検索する公開鍵（Base64 / X.963） |
 | `status` | ✗ | 絞り込むステータス（カンマ区切りで複数指定可） |
 | `page` | ✗ | ページ番号（デフォルト: 1） |
 | `per` | ✗ | 1ページあたりの件数（デフォルト: 10） |
@@ -119,12 +128,16 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
       "contentHash": "abc123def456",
       "creatorPublicKey": "BHqG...",
       "creatorSignature": "MEUC...",
-      "counterpartyPublicKey": "BIrH...",
-      "counterpartySignature": null,
+      "counterparties": [
+        {
+          "publicKey": "BIrH...",
+          "signSignature": null,
+          "honorSignature": null,
+          "partSignature": null
+        }
+      ],
       "honorCreatorSignature": null,
-      "honorCounterpartySignature": null,
       "partCreatorSignature": null,
-      "partCounterpartySignature": null,
       "status": "proposed",
       "createdAt": "2026-01-01T00:00:00Z",
       "updatedAt": "2026-01-01T00:00:00Z"
@@ -148,7 +161,7 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
 
 ## 2. POST /proposes — Propose作成
 
-作成者が新しいProposeを作成します。作成者は `proposeId + contentHash + counterpartyPublicKey + createdAt` に署名します。
+作成者が新しいProposeを作成します。`proposeId + contentHash + counterpartyPublicKeys（ソート&結合） + createdAt` に署名します。
 
 ### リクエストボディ
 
@@ -158,7 +171,7 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
   "contentHash": "abc123def456",
   "creatorPublicKey": "BHqG...",
   "creatorSignature": "MEUC...",
-  "counterpartyPublicKey": "BIrH...",
+  "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
   "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
@@ -169,7 +182,7 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
 | `contentHash` | string | ✅ | コンテンツのハッシュ値 |
 | `creatorPublicKey` | string | ✅ | 作成者の公開鍵 |
 | `creatorSignature` | string | ✅ | 作成者の署名 |
-| `counterpartyPublicKey` | string | ✅ | 相手方の公開鍵 |
+| `counterpartyPublicKeys` | string[] | ✅ | 相手方の公開鍵（1件以上） |
 | `createdAt` | string | ✅ | ISO8601形式の作成日時 |
 
 ### レスポンス
@@ -177,7 +190,7 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
 | ステータス | 説明 |
 |---|---|
 | 201 Created | 作成成功 |
-| 400 | `proposeId` の形式が無効 |
+| 400 | `proposeId` の形式が無効、または `counterpartyPublicKeys` が空 |
 | 401 | 署名検証失敗 |
 | 409 Conflict | 同じIDのProposeが既に存在 |
 
@@ -193,7 +206,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ### レスポンス (200 OK)
 
-Proposeオブジェクト（上記データモデル参照）
+`ProposeResponse` オブジェクト（上記データモデル参照）
 
 ### エラー
 
@@ -204,31 +217,35 @@ Proposeオブジェクト（上記データモデル参照）
 
 ---
 
-## 4. PATCH /proposes/:id/sign — 相手方署名（proposed → signed）
+## 4. PATCH /proposes/:id/sign — 相手方署名（proposed → 全員署名でsigned）
 
-相手方が `proposeId + contentHash + counterpartyPublicKey + createdAt` に署名して、Proposeを `signed` 状態に遷移させます。
+相手方が `proposeId + contentHash + signerPublicKey + createdAt` に署名します。
+**全ての** 相手方が署名した時点で `signed` 状態に自動遷移します。
 
 ### リクエストボディ
 
 ```json
 {
-  "counterpartySignature": "MEUC...",
+  "signerPublicKey": "BIrH...",
+  "signature": "MEUC...",
   "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
 
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|
-| `counterpartySignature` | string | ✅ | 相手方の署名 |
+| `signerPublicKey` | string | ✅ | 署名者の公開鍵（登録済みの相手方であること） |
+| `signature` | string | ✅ | 署名者の署名 |
 | `createdAt` | string | ✅ | Proposeの `createdAt`（一致確認用） |
 
 ### レスポンス
 
 | ステータス | 説明 |
 |---|---|
-| 200 OK | 署名成功、`signed` 状態に遷移 |
+| 200 OK | 署名成功。全相手方が揃えば `signed` 状態に遷移 |
 | 400 | `createdAt` が不一致、または無効なUUID |
 | 401 | 署名検証失敗 |
+| 403 Forbidden | `signerPublicKey` が登録済み相手方ではない |
 | 404 | Proposeが見つからない |
 | 409 Conflict | `proposed` 状態ではない |
 
@@ -236,7 +253,7 @@ Proposeオブジェクト（上記データモデル参照）
 
 ## 5. DELETE /proposes/:id — 解消（proposed → dissolved）
 
-作成者または相手方が `"dissolved." + proposeId + contentHash + timestamp` に署名して、Proposeを解消します。`proposed` 状態のみ可。
+作成者またはいずれかの相手方が `"dissolved." + proposeId + contentHash + timestamp` に署名して解消します。`proposed` 状態のみ可。
 
 ### リクエストボディ
 
@@ -266,9 +283,9 @@ Proposeオブジェクト（上記データモデル参照）
 
 ---
 
-## 6. PATCH /proposes/:id/honor — Honor署名（signed → honored）
+## 6. PATCH /proposes/:id/honor — Honor署名（signed → 全員で honored）
 
-`"honored." + proposeId + contentHash + timestamp` に署名します。両者の署名が揃った時点で `honored` 状態に自動遷移します。
+`"honored." + proposeId + contentHash + timestamp` に署名します。作成者と**全ての**相手方が揃った時点で `honored` 状態に自動遷移します。
 
 ### リクエストボディ
 
@@ -284,7 +301,7 @@ Proposeオブジェクト（上記データモデル参照）
 
 | ステータス | 説明 |
 |---|---|
-| 200 OK | 署名記録。両者揃えば `honored` に遷移 |
+| 200 OK | 署名記録。全員揃えば `honored` に遷移 |
 | 401 | 署名検証失敗 |
 | 403 Forbidden | 参加者以外の公開鍵 |
 | 404 | Proposeが見つからない |
@@ -292,9 +309,9 @@ Proposeオブジェクト（上記データモデル参照）
 
 ---
 
-## 7. PATCH /proposes/:id/part — Part署名（signed → parted）
+## 7. PATCH /proposes/:id/part — Part署名（signed → 全員で parted）
 
-`"parted." + proposeId + contentHash + timestamp` に署名します。両者の署名が揃った時点で `parted` 状態に自動遷移します。
+`"parted." + proposeId + contentHash + timestamp` に署名します。作成者と**全ての**相手方が揃った時点で `parted` 状態に自動遷移します。
 
 ### リクエストボディ
 
@@ -310,7 +327,7 @@ Proposeオブジェクト（上記データモデル参照）
 
 | ステータス | 説明 |
 |---|---|
-| 200 OK | 署名記録。両者揃えば `parted` に遷移 |
+| 200 OK | 署名記録。全員揃えば `parted` に遷移 |
 | 401 | 署名検証失敗 |
 | 403 Forbidden | 参加者以外の公開鍵 |
 | 404 | Proposeが見つからない |
@@ -335,7 +352,7 @@ Proposeオブジェクト（上記データモデル参照）
 
 ## cURL 使用例
 
-### Propose作成
+### Propose作成（相手方2名）
 
 ```bash
 curl -X POST http://localhost:8080/v1/proposes \
@@ -345,7 +362,7 @@ curl -X POST http://localhost:8080/v1/proposes \
     "contentHash": "abc123def456",
     "creatorPublicKey": "BHqG...",
     "creatorSignature": "MEUC...",
-    "counterpartyPublicKey": "BIrH...",
+    "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
     "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```
@@ -356,7 +373,8 @@ curl -X POST http://localhost:8080/v1/proposes \
 curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/sign \
   -H "Content-Type: application/json" \
   -d '{
-    "counterpartySignature": "MEUC...",
+    "signerPublicKey": "BIrH...",
+    "signature": "MEUC...",
     "createdAt": "2026-01-01T00:00:00Z"
   }'
 ```
