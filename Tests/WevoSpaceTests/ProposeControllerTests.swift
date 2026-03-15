@@ -83,7 +83,7 @@ struct ProposeControllerTests {
 
     // MARK: - POST /v1/proposes
 
-    @Test("正常なProposeを作成できる")
+    @Test("Can create a valid Propose")
     func createProposeSuccess() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -123,7 +123,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正な署名でProposeを作成するとエラーになる")
+    @Test("Creating a Propose with an invalid signature returns an error")
     func createProposeWithInvalidSignature() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -151,7 +151,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("同じIDのProposeを重複作成するとエラーになる")
+    @Test("Duplicate Propose creation with the same ID returns an error")
     func createDuplicateProposeReturnsConflict() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -172,14 +172,14 @@ struct ProposeControllerTests {
                 createdAt: createdAt
             )
 
-            // 1回目は成功
+            // First request succeeds
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created)
             })
 
-            // 2回目は409 Conflict
+            // Second request returns 409 Conflict
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -188,7 +188,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正なproposeIdの形式でエラーになる")
+    @Test("Invalid proposeId format returns an error")
     func createProposeWithInvalidIdFormat() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -210,7 +210,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("counterpartyPublicKeysが空だとエラーになる")
+    @Test("Empty counterpartyPublicKeys returns an error")
     func createProposeWithEmptyCounterpartiesReturnsBadRequest() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -234,7 +234,7 @@ struct ProposeControllerTests {
 
     // MARK: - GET /v1/proposes/:id
 
-    @Test("既存のProposeをIDで取得できる")
+    @Test("Can retrieve an existing Propose by ID")
     func getOnePropose() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, _) = try await createPropose(app: app)
@@ -249,7 +249,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("存在しないIDで404になる")
+    @Test("Non-existent ID returns 404")
     func getOneNotFound() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "v1/proposes/\(UUID())", afterResponse: { res async throws in
@@ -258,7 +258,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("無効なUUID形式で詳細取得すると400になる")
+    @Test("Fetching detail with invalid UUID format returns 400")
     func getOneWithInvalidUUIDReturnsBadRequest() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "v1/proposes/not-a-uuid", afterResponse: { res async throws in
@@ -269,7 +269,7 @@ struct ProposeControllerTests {
 
     // MARK: - GET /v1/proposes?publicKey=...&status=...
 
-    @Test("publicKeyなしでリスト取得すると400になる")
+    @Test("Listing without publicKey returns 400")
     func listWithoutPublicKeyReturnsBadRequest() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "v1/proposes", afterResponse: { res async throws in
@@ -278,7 +278,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("publicKeyでProposeを検索できる（creator）")
+    @Test("Can search Proposes by publicKey (creator)")
     func listByCreatorPublicKey() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -295,7 +295,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("publicKeyでProposeを検索できる（counterparty）")
+    @Test("Can search Proposes by publicKey (counterparty)")
     func listByCounterpartyPublicKey() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -312,7 +312,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("statusフィルタで絞り込みができる")
+    @Test("Can filter by status")
     func listFilterByStatus() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -323,7 +323,7 @@ struct ProposeControllerTests {
                 counterpartyKeyPair: counterparty
             )
 
-            // proposed → signed へ遷移させる
+            // Transition from proposed → signed
             let signMessage = proposeId.uuidString + contentHash + counterpartyKP.publicKeyBase64 + createdAt
             let counterpartySig = try counterpartyKP.sign(signMessage)
             let signInput = SignInput(signerPublicKey: counterpartyKP.publicKeyBase64, signature: counterpartySig, createdAt: createdAt)
@@ -335,21 +335,21 @@ struct ProposeControllerTests {
 
             let encodedKey = encodePublicKey(creator.publicKeyBase64)
 
-            // proposed フィルタ → 0件
+            // proposed filter → 0 results
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 0)
             })
 
-            // signed フィルタ → 1件
+            // signed filter → 1 result
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=signed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
             })
 
-            // proposed,signed フィルタ → 1件
+            // proposed,signed filter → 1 result
             try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed,signed", afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let page = try res.content.decode(Page<ProposeResponse>.self)
@@ -360,7 +360,7 @@ struct ProposeControllerTests {
 
     // MARK: - PATCH /v1/proposes/:id/sign
 
-    @Test("counterpartyが署名するとsigned状態になる")
+    @Test("Counterparty signing transitions to signed state")
     func signProposeSuccess() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
@@ -386,7 +386,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正な署名でsignするとエラーになる")
+    @Test("Signing with an invalid signature returns an error")
     func signProposeWithInvalidSignature() async throws {
         try await withApp { app in
             let (proposeId, _, createdAt, _, counterparty) = try await createPropose(app: app)
@@ -405,7 +405,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("createdAtが一致しないとエラーになる")
+    @Test("Mismatched createdAt returns an error")
     func signProposeWithWrongCreatedAt() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
@@ -423,7 +423,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("存在しないProposeをsignすると404になる")
+    @Test("Signing a non-existent Propose returns 404")
     func signNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -437,7 +437,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("counterpartyでない人がsignすると403になる")
+    @Test("Non-counterparty signing returns 403")
     func signByNonCounterpartyReturnsForbidden() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, _) = try await createPropose(app: app)
@@ -455,12 +455,12 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("proposed以外の状態でsignするとエラーになる")
+    @Test("Signing a Propose in a non-proposed state returns an error")
     func signNonProposedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
-            // 1回目のsign（proposed → signed）
+            // First sign (proposed → signed)
             let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let sig = try counterparty.sign(message)
             let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt)
@@ -471,7 +471,7 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
-            // 2回目のsign → conflict（signed状態のため）
+            // Second sign → conflict (already in signed state)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -482,7 +482,7 @@ struct ProposeControllerTests {
 
     // MARK: - DELETE /v1/proposes/:id (dissolve)
 
-    @Test("creatorがdissolveできる")
+    @Test("Creator can dissolve")
     func dissolveByCreator() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
@@ -503,7 +503,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("counterpartyがdissolveできる")
+    @Test("Counterparty can dissolve")
     func dissolveByCounterparty() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
@@ -523,7 +523,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("存在しないProposeをdissolveすると404になる")
+    @Test("Dissolving a non-existent Propose returns 404")
     func dissolveNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let actor = KeyPair()
@@ -541,7 +541,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正な署名でdissolveするとエラーになる（参加者の鍵で誤ったメッセージ）")
+    @Test("Dissolving with an invalid signature returns an error (wrong message signed by participant key)")
     func dissolveWithInvalidSignatureReturnsUnauthorized() async throws {
         try await withApp { app in
             let (proposeId, _, _, creator, _) = try await createPropose(app: app)
@@ -561,7 +561,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("第三者がdissolveしようとすると403になる")
+    @Test("Third party attempting to dissolve returns 403")
     func dissolveByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, _) = try await createPropose(app: app)
@@ -580,7 +580,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("signed状態のProposeはdissolveできない")
+    @Test("A Propose in signed state cannot be dissolved")
     func dissolveSignedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -594,7 +594,7 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
-            // dissolve試行 → conflict
+            // Dissolve attempt → conflict
             let timestamp = "2026-01-02T00:00:00Z"
             let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + timestamp
             let dissolveSig = try creator.sign(dissolveMessage)
@@ -610,7 +610,7 @@ struct ProposeControllerTests {
 
     // MARK: - PATCH /v1/proposes/:id/honor
 
-    @Test("両者がhonor署名するとhonored状態になる")
+    @Test("Both parties honoring transitions to honored state")
     func honorBothPartiesSuccess() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -627,18 +627,18 @@ struct ProposeControllerTests {
             let timestamp = "2026-01-03T00:00:00Z"
             let honorMessage = "honored." + proposeId.uuidString + contentHash + timestamp
 
-            // creatorがhonor
+            // Creator honors
             let creatorHonorSig = try creator.sign(honorMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorHonorSig, timestamp: timestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                // まだsigned
+                // Still signed
                 let propose = try await Propose.find(proposeId, on: app.db)
                 #expect(propose?.proposeStatus == .signed)
             })
 
-            // counterpartyがhonor → honored
+            // Counterparty honors → honored
             let counterpartyHonorSig = try counterparty.sign(honorMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyHonorSig, timestamp: timestamp))
@@ -650,7 +650,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("第三者がhonorしようとすると403になる")
+    @Test("Third party attempting to honor returns 403")
     func honorByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
@@ -678,7 +678,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正な署名でhonorするとエラーになる")
+    @Test("Honoring with an invalid signature returns an error")
     func honorWithInvalidSignatureReturnsUnauthorized() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -704,7 +704,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("存在しないProposeをhonorすると404になる")
+    @Test("Honoring a non-existent Propose returns 404")
     func honorNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -722,7 +722,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("proposed状態のProposeはhonorできない")
+    @Test("A Propose in proposed state cannot be honored")
     func honorProposedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
@@ -742,7 +742,7 @@ struct ProposeControllerTests {
 
     // MARK: - PATCH /v1/proposes/:id/part
 
-    @Test("両者がpart署名するとparted状態になる")
+    @Test("Both parties parting transitions to parted state")
     func partBothPartiesSuccess() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -759,7 +759,7 @@ struct ProposeControllerTests {
             let timestamp = "2026-01-03T00:00:00Z"
             let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
 
-            // creatorがpart
+            // Creator parts
             let creatorPartSig = try creator.sign(partMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp))
@@ -769,7 +769,7 @@ struct ProposeControllerTests {
                 #expect(propose?.proposeStatus == .signed)
             })
 
-            // counterpartyがpart → parted
+            // Counterparty parts → parted
             let counterpartyPartSig = try counterparty.sign(partMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyPartSig, timestamp: timestamp))
@@ -781,7 +781,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("不正な署名でpartするとエラーになる")
+    @Test("Parting with an invalid signature returns an error")
     func partWithInvalidSignatureReturnsUnauthorized() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -807,7 +807,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("存在しないProposeをpartすると404になる")
+    @Test("Parting a non-existent Propose returns 404")
     func partNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let creator = KeyPair()
@@ -825,7 +825,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("proposed状態のProposeはpartできない")
+    @Test("A Propose in proposed state cannot be parted")
     func partProposedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
@@ -843,7 +843,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("同一参加者が二回目のpart署名を送信しても上書きされる")
+    @Test("A second part signature from the same participant overwrites the first")
     func partSamePartyTwiceIsAccepted() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -862,7 +862,7 @@ struct ProposeControllerTests {
             let creatorPartSig = try creator.sign(partMessage)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp)
 
-            // 1回目（counterparty未送信なのでまだsigned）
+            // First time (counterparty has not signed yet, still signed)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -871,7 +871,7 @@ struct ProposeControllerTests {
                 #expect(propose?.proposeStatus == .signed)
             })
 
-            // 2回目（署名を上書き送信。まだparted未完のためsigned状態のまま受け付けられる）
+            // Second time (signature overwrite; accepted as signed since parted is not yet complete)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -882,7 +882,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("第三者がpartしようとすると403になる")
+    @Test("Third party attempting to part returns 403")
     func partByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
@@ -910,9 +910,9 @@ struct ProposeControllerTests {
         }
     }
 
-    // MARK: - 終端状態からの不正遷移
+    // MARK: - Invalid transitions from terminal states
 
-    @Test("honored状態のProposeはdissolveできない")
+    @Test("A Propose in honored state cannot be dissolved")
     func dissolveHonoredProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -934,7 +934,7 @@ struct ProposeControllerTests {
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(honorMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
-            // honored → dissolve試行 → conflict
+            // honored → dissolve attempt → conflict
             let dissolveTimestamp = "2026-01-04T00:00:00Z"
             let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + dissolveTimestamp
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(dissolveMessage), timestamp: dissolveTimestamp)
@@ -947,7 +947,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("parted状態のProposeはsignできない")
+    @Test("A Propose in parted state cannot be signed")
     func signPartedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -969,7 +969,7 @@ struct ProposeControllerTests {
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(partMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
-            // parted → sign試行 → conflict
+            // parted → sign attempt → conflict
             let newSig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, createdAt: createdAt))
@@ -979,9 +979,9 @@ struct ProposeControllerTests {
         }
     }
 
-    // MARK: - 複数 counterparty (1:n)
+    // MARK: - Multiple counterparties (1:n)
 
-    @Test("2人のcounterpartyが両方署名するとsigned状態になる")
+    @Test("Two counterparties both signing transitions to signed state")
     func signWithTwoCounterpartiesTransitionsToSigned() async throws {
         try await withApp { app in
             let proposeId = UUID()
@@ -1010,7 +1010,7 @@ struct ProposeControllerTests {
                 #expect(res.status == .created)
             })
 
-            // counterparty1 が署名 → まだ proposed（counterparty2 未署名）
+            // counterparty1 signs → still proposed (counterparty2 has not signed)
             let sign1Message = proposeId.uuidString + contentHash + counterparty1.publicKeyBase64 + createdAt
             let sig1 = try counterparty1.sign(sign1Message)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
@@ -1021,7 +1021,7 @@ struct ProposeControllerTests {
                 #expect(propose?.proposeStatus == .proposed)
             })
 
-            // counterparty2 が署名 → signed に遷移
+            // counterparty2 signs → transitions to signed
             let sign2Message = proposeId.uuidString + contentHash + counterparty2.publicKeyBase64 + createdAt
             let sig2 = try counterparty2.sign(sign2Message)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
@@ -1034,7 +1034,7 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("dissolved状態のProposeはsignできない")
+    @Test("A Propose in dissolved state cannot be signed")
     func signDissolvedProposeReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
@@ -1047,7 +1047,7 @@ struct ProposeControllerTests {
                 try req.content.encode(dissolveInput)
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
-            // dissolved → sign試行 → conflict
+            // dissolved → sign attempt → conflict
             let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
             let sig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in

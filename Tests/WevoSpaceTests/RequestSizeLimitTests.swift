@@ -51,7 +51,7 @@ struct RequestSizeLimitTests {
         )
     }
 
-    @Test("通常サイズのリクエストはサイズ制限を通過する")
+    @Test("Normal-sized requests pass the size limit")
     func normalSizeRequest() async throws {
         try await withApp { app in
             let privateKey = P256.Signing.PrivateKey()
@@ -84,7 +84,7 @@ struct RequestSizeLimitTests {
         }
     }
 
-    @Test("2MBを超えるcontentHashはリクエストサイズ制限で拒否される")
+    @Test("contentHash exceeding 2 MB is rejected by the request size limit")
     func extremelyLargeBody() async throws {
         try await withApp { app in
             let hugeContentHash = String(repeating: "a", count: 2_000_000)
@@ -102,7 +102,7 @@ struct RequestSizeLimitTests {
         }
     }
 
-    @Test("2MBを超えるcreatorPublicKeyはリクエストサイズ制限で拒否される")
+    @Test("creatorPublicKey exceeding 2 MB is rejected by the request size limit")
     func extremelyLargePublicKey() async throws {
         try await withApp { app in
             let hugeKey = String(repeating: "a", count: 2_000_000)

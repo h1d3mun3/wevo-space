@@ -51,7 +51,7 @@ struct RateLimitMiddlewareTests {
         try await app.asyncShutdown()
     }
 
-    @Test("Rate Limit以内のリクエストは成功する")
+    @Test("Requests within rate limit succeed")
     func requestsWithinLimit() async throws {
         try await withApp { app in
             // All 5 requests should succeed
@@ -70,7 +70,7 @@ struct RateLimitMiddlewareTests {
         }
     }
 
-    @Test("Rate Limitを超えるとエラーになる")
+    @Test("Exceeding rate limit returns an error")
     func requestsExceedingLimit() async throws {
         try await withApp { app in
             // Send 5 requests
@@ -102,7 +102,7 @@ struct RateLimitMiddlewareTests {
         }
     }
 
-    @Test("異なるエンドポイントでもRate Limitが適用される")
+    @Test("Rate limit applies across different endpoints")
     func rateLimitAcrossEndpoints() async throws {
         try await withApp { app in
             // 3 requests to hello endpoint
@@ -126,7 +126,7 @@ struct RateLimitMiddlewareTests {
         }
     }
 
-    @Test("Rate Limitヘッダーが正しく設定される")
+    @Test("Rate limit headers are set correctly")
     func rateLimitHeaders() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "hello", afterResponse: { res async throws in

@@ -57,7 +57,7 @@ actor RateLimitMiddleware: AsyncMiddleware {
             // Return error message as JSON
             let errorBody: [String: Any] = [
                 "error": true,
-                "reason": "レート制限を超えました。しばらく待ってから再試行してください。"
+                "reason": "Rate limit exceeded. Please wait a moment before retrying."
             ]
             if let jsonData = try? JSONSerialization.data(withJSONObject: errorBody) {
                 response.body = Response.Body(data: jsonData)

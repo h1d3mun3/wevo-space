@@ -59,7 +59,7 @@ struct ProposeController: RouteCollection {
     // GET /v1/proposes?publicKey=...&status=proposed,signed
     func list(req: Request) async throws -> Page<ProposeResponse> {
         guard let publicKey = req.query[String.self, at: "publicKey"] else {
-            throw Abort(.badRequest, reason: "publicKeyを指定してください")
+            throw Abort(.badRequest, reason: "publicKey is required")
         }
 
         // Find propose IDs where publicKey is registered as a counterparty
@@ -102,16 +102,16 @@ struct ProposeController: RouteCollection {
         let input = try req.content.decode(CreateProposeInput.self)
 
         guard let proposeId = UUID(uuidString: input.proposeId) else {
-            throw Abort(.badRequest, reason: "proposeIdの形式が無効です")
+            throw Abort(.badRequest, reason: "Invalid proposeId format")
         }
 
         guard !input.counterpartyPublicKeys.isEmpty else {
-            throw Abort(.badRequest, reason: "counterpartyPublicKeysは1件以上必要です")
+            throw Abort(.badRequest, reason: "counterpartyPublicKeys must contain at least one entry")
         }
 
         // Duplicate check
         if try await Propose.find(proposeId, on: req.db) != nil {
-            throw Abort(.conflict, reason: "同じIDのProposeが既に存在します")
+            throw Abort(.conflict, reason: "A Propose with the same ID already exists")
         }
 
         // Signature verification:
@@ -140,14 +140,14 @@ struct ProposeController: RouteCollection {
     // GET /v1/proposes/:id
     func getOne(req: Request) async throws -> ProposeResponse {
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "無効なPropose IDです")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Proposeが見つかりません")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
         return try ProposeResponse(from: propose)
@@ -159,26 +159,26 @@ struct ProposeController: RouteCollection {
         let input = try req.content.decode(SignInput.self)
 
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "無効なPropose IDです")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Proposeが見つかりません")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
         guard propose.proposeStatus == .proposed else {
-            throw Abort(.conflict, reason: "proposed状態のProposeのみ署名できます（現在: \(propose.status)）")
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
         }
 
         guard let counterparty = propose.counterparties.first(where: { $0.publicKey == input.signerPublicKey }) else {
-            throw Abort(.forbidden, reason: "このProposeのcounterpartyではありません")
+            throw Abort(.forbidden, reason: "Not a counterparty of this Propose")
         }
 
         guard input.createdAt == propose.createdAt else {
-            throw Abort(.badRequest, reason: "createdAtがProposeの値と一致しません")
+            throw Abort(.badRequest, reason: "createdAt does not match the Propose value")
         }
 
         // Signature verification: proposeId + contentHash + signerPublicKey + createdAt
@@ -203,24 +203,24 @@ struct ProposeController: RouteCollection {
         let input = try req.content.decode(TransitionInput.self)
 
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "無効なPropose IDです")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Proposeが見つかりません")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
         guard propose.proposeStatus == .proposed else {
-            throw Abort(.conflict, reason: "proposed状態のProposeのみ解消できます（現在: \(propose.status)）")
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be dissolved (current: \(propose.status))")
         }
 
         let isCreator = input.publicKey == propose.creatorPublicKey
         let isCounterparty = propose.counterparties.contains { $0.publicKey == input.publicKey }
         guard isCreator || isCounterparty else {
-            throw Abort(.forbidden, reason: "このProposeの参加者のみが解消できます")
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can dissolve it")
         }
 
         // Signature verification: "dissolved." + proposeId + contentHash + timestamp
@@ -239,24 +239,24 @@ struct ProposeController: RouteCollection {
         let input = try req.content.decode(TransitionInput.self)
 
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "無効なPropose IDです")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Proposeが見つかりません")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
         guard propose.proposeStatus == .signed else {
-            throw Abort(.conflict, reason: "signed状態のProposeのみhonorできます（現在: \(propose.status)）")
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
         }
 
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
-            throw Abort(.forbidden, reason: "このProposeの参加者のみがhonorできます")
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can honor it")
         }
 
         // Signature verification: "honored." + proposeId + contentHash + timestamp
@@ -289,24 +289,24 @@ struct ProposeController: RouteCollection {
         let input = try req.content.decode(TransitionInput.self)
 
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "無効なPropose IDです")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Proposeが見つかりません")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
         guard propose.proposeStatus == .signed else {
-            throw Abort(.conflict, reason: "signed状態のProposeのみpartできます（現在: \(propose.status)）")
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be parted (current: \(propose.status))")
         }
 
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
-            throw Abort(.forbidden, reason: "このProposeの参加者のみがpartできます")
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can part it")
         }
 
         // Signature verification: "parted." + proposeId + contentHash + timestamp
@@ -337,33 +337,33 @@ struct ProposeController: RouteCollection {
 
     private func verifySignature(publicKey: String, signature: String, message: String) throws {
         guard let publicKeyData = Data(base64Encoded: publicKey) else {
-            throw Abort(.badRequest, reason: "公開鍵のBase64デコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to Base64-decode the public key")
         }
 
         guard let signatureData = Data(base64Encoded: signature) else {
-            throw Abort(.badRequest, reason: "署名のBase64デコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to Base64-decode the signature")
         }
 
         guard let messageData = message.data(using: .utf8) else {
-            throw Abort(.badRequest, reason: "メッセージのエンコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to encode the message")
         }
 
         let publicKeyObj: P256.Signing.PublicKey
         do {
             publicKeyObj = try P256.Signing.PublicKey(x963Representation: publicKeyData)
         } catch {
-            throw Abort(.badRequest, reason: "公開鍵の形式が無効です")
+            throw Abort(.badRequest, reason: "Invalid public key format")
         }
 
         let ecdsaSignature: P256.Signing.ECDSASignature
         do {
             ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signatureData)
         } catch {
-            throw Abort(.badRequest, reason: "署名の形式が無効です")
+            throw Abort(.badRequest, reason: "Invalid signature format")
         }
 
         guard publicKeyObj.isValidSignature(ecdsaSignature, for: messageData) else {
-            throw Abort(.unauthorized, reason: "署名検証に失敗しました")
+            throw Abort(.unauthorized, reason: "Signature verification failed")
         }
     }
 }
