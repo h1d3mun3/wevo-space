@@ -1,229 +1,363 @@
-//
-//  ProposeController.swift
-//  WevoSpace
-//
-//  Created by hidemune on 3/5/26.
-//
-
 import Fluent
 import Vapor
 import Crypto
 import Foundation
 
+// Response DTO including counterparty details
+struct ProposeResponse: Content {
+    let id: UUID
+    let contentHash: String
+    let creatorPublicKey: String
+    let creatorSignature: String
+    let counterparties: [CounterpartyInfo]
+    let honorCreatorSignature: String?
+    let partCreatorSignature: String?
+    let status: String
+    let createdAt: String
+    let updatedAt: Date?
+
+    struct CounterpartyInfo: Content {
+        let publicKey: String
+        let signSignature: String?
+        let honorSignature: String?
+        let partSignature: String?
+    }
+
+    init(from propose: Propose) throws {
+        self.id = try propose.requireID()
+        self.contentHash = propose.contentHash
+        self.creatorPublicKey = propose.creatorPublicKey
+        self.creatorSignature = propose.creatorSignature
+        self.counterparties = propose.counterparties.map {
+            CounterpartyInfo(
+                publicKey: $0.publicKey,
+                signSignature: $0.signSignature,
+                honorSignature: $0.honorSignature,
+                partSignature: $0.partSignature
+            )
+        }
+        self.honorCreatorSignature = propose.honorCreatorSignature
+        self.partCreatorSignature = propose.partCreatorSignature
+        self.status = propose.status
+        self.createdAt = propose.createdAt
+        self.updatedAt = propose.updatedAt
+    }
+}
+
 struct ProposeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let proposes = routes.grouped("proposes")
-
-        // GET /proposes/:proposeID -> 指定したUUIDのPropose詳細を取得
-        proposes.get(":proposeID", use: getOne)
-
-        // GET /proposes?publicKey=xxx&page=1&per=20
         proposes.get(use: list)
-
-        // POST /proposes -> 最初の提案を作成
         proposes.post(use: create)
-
-        // PUT /proposes/:proposeID -> 署名を追加して更新（分散型対応）
-        proposes.put(":proposeID", use: updateWithSignatures)
+        proposes.get(":proposeID", use: getOne)
+        proposes.patch(":proposeID", "sign", use: sign)
+        proposes.delete(":proposeID", use: dissolve)
+        proposes.patch(":proposeID", "honor", use: honor)
+        proposes.patch(":proposeID", "part", use: part)
     }
 
-    // 1. 新規作成ロジック（複数署名対応）
+    // GET /v1/proposes?publicKey=...&status=proposed,signed
+    func list(req: Request) async throws -> Page<ProposeResponse> {
+        guard let publicKey = req.query[String.self, at: "publicKey"] else {
+            throw Abort(.badRequest, reason: "publicKey is required")
+        }
+
+        // Find propose IDs where publicKey is registered as a counterparty
+        let counterpartyProposeIDs = try await ProposeCounterparty.query(on: req.db)
+            .filter(\.$publicKey == publicKey)
+            .all()
+            .map { $0.$propose.id }
+
+        var query = Propose.query(on: req.db).with(\.$counterparties)
+
+        if counterpartyProposeIDs.isEmpty {
+            query = query.filter(\.$creatorPublicKey == publicKey)
+        } else {
+            query = query.group(.or) { group in
+                group.filter(\.$creatorPublicKey == publicKey)
+                group.filter(\.$id ~~ counterpartyProposeIDs)
+            }
+        }
+
+        if let statusParam = req.query[String.self, at: "status"] {
+            let statuses = statusParam
+                .split(separator: ",")
+                .map { String($0) }
+                .filter { ProposeStatus(rawValue: $0) != nil }
+            if !statuses.isEmpty {
+                query = query.filter(\.$status ~~ statuses)
+            }
+        }
+
+        let page = try await query
+            .sort(\.$updatedAt, .descending)
+            .paginate(for: req)
+
+        let items = try page.items.map { try ProposeResponse(from: $0) }
+        return Page(items: items, metadata: page.metadata)
+    }
+
+    // POST /v1/proposes
     func create(req: Request) async throws -> HTTPStatus {
-        let input = try req.content.decode(ProposeInput.self)
+        let input = try req.content.decode(CreateProposeInput.self)
 
-        // 入力サイズの検証
-        try validateInputSizes(input: input)
-
-        // 署名が最低1つ必要
-        guard !input.signatures.isEmpty else {
-            throw Abort(.badRequest, reason: "最低1つの署名が必要です")
+        guard let proposeId = UUID(uuidString: input.proposeId) else {
+            throw Abort(.badRequest, reason: "Invalid proposeId format")
         }
 
-        // 全署名を検証
-        for signatureInput in input.signatures {
-            try verifySignature(
-                publicKey: signatureInput.publicKey,
-                signature: signatureInput.signature,
-                message: input.payloadHash
-            )
+        guard !input.counterpartyPublicKeys.isEmpty else {
+            throw Abort(.badRequest, reason: "counterpartyPublicKeys must contain at least one entry")
         }
 
-        let newPropose = Propose(id: input.id, payloadHash: input.payloadHash)
-        try await newPropose.save(on: req.db)
+        // Duplicate check
+        if try await Propose.find(proposeId, on: req.db) != nil {
+            throw Abort(.conflict, reason: "A Propose with the same ID already exists")
+        }
 
-        // 全署名を保存
-        for signatureInput in input.signatures {
-            let signature = Signature(
-                proposeID: newPropose.id!,
-                publicKey: signatureInput.publicKey,
-                signatureData: signatureInput.signature
-            )
-            try await signature.save(on: req.db)
+        // Signature verification:
+        // proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt
+        let sortedKeys = input.counterpartyPublicKeys.sorted().joined()
+        let message = input.proposeId + input.contentHash + sortedKeys + input.createdAt
+        try verifySignature(publicKey: input.creatorPublicKey, signature: input.creatorSignature, message: message)
+
+        let propose = Propose(
+            id: proposeId,
+            contentHash: input.contentHash,
+            creatorPublicKey: input.creatorPublicKey,
+            creatorSignature: input.creatorSignature,
+            createdAt: input.createdAt
+        )
+        try await propose.save(on: req.db)
+
+        for publicKey in input.counterpartyPublicKeys {
+            let counterparty = ProposeCounterparty(proposeID: proposeId, publicKey: publicKey)
+            try await counterparty.save(on: req.db)
         }
 
         return .created
     }
 
-    // PUT /proposes/:proposeID - 分散型システム用の署名追加更新
-    func updateWithSignatures(req: Request) async throws -> HTTPStatus {
-        let input = try req.content.decode(ProposeInput.self)
-
-        // 入力サイズの検証
-        try validateInputSizes(input: input)
-
-        // 1. URLからUUIDを取得
+    // GET /v1/proposes/:id
+    func getOne(req: Request) async throws -> ProposeResponse {
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "Invalid Propose ID.")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
-        // 2. UUIDが一致しているか確認
-        guard proposeID == input.id else {
-            throw Abort(.badRequest, reason: "URLのIDとリクエストボディのIDが一致しません")
-        }
-
-        // 3. 既存のProposeを取得（署名も含む）
-        guard let existingPropose = try await Propose.query(on: req.db)
+        guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
-            .with(\.$signatures)
+            .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "Propose not found.")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // 4. payloadHashの不変性チェック
-        guard existingPropose.payloadHash == input.payloadHash else {
-            throw Abort(.badRequest, reason: "payloadHashの変更は許可されません")
+        return try ProposeResponse(from: propose)
+    }
+
+    // PATCH /v1/proposes/:id/sign
+    // proposed → signed (auto-transitions when all counterparties have signed)
+    func sign(req: Request) async throws -> HTTPStatus {
+        let input = try req.content.decode(SignInput.self)
+
+        guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
-        // 5. 既存の署名をマップ化
-        let existingSignatures = existingPropose.signatures.map { sig in
-            SignatureInput(publicKey: sig.publicKey, signature: sig.signatureData)
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // 6. 既存署名が全て含まれているか検証
-        for existingSig in existingSignatures {
-            guard input.signatures.contains(existingSig) else {
-                throw Abort(.badRequest, reason: "既存の署名の削除や変更は許可されません")
-            }
+        guard propose.proposeStatus == .proposed else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
         }
 
-        // 7. 新しい署名のみを抽出
-        let newSignatures = input.signatures.filter { inputSig in
-            !existingSignatures.contains(inputSig)
+        guard let counterparty = propose.counterparties.first(where: { $0.publicKey == input.signerPublicKey }) else {
+            throw Abort(.forbidden, reason: "Not a counterparty of this Propose")
         }
 
-        // 8. 全ての新しい署名を検証
-        for signatureInput in newSignatures {
-            try verifySignature(
-                publicKey: signatureInput.publicKey,
-                signature: signatureInput.signature,
-                message: input.payloadHash
-            )
+        guard input.createdAt == propose.createdAt else {
+            throw Abort(.badRequest, reason: "createdAt does not match the Propose value")
         }
 
-        // 9. 新しい署名をDBに追加
-        for signatureInput in newSignatures {
-            let signature = Signature(
-                proposeID: existingPropose.id!,
-                publicKey: signatureInput.publicKey,
-                signatureData: signatureInput.signature
-            )
-            try await signature.save(on: req.db)
+        // Signature verification: proposeId + contentHash + signerPublicKey + createdAt
+        let message = propose.id!.uuidString + propose.contentHash + input.signerPublicKey + propose.createdAt
+        try verifySignature(publicKey: input.signerPublicKey, signature: input.signature, message: message)
+
+        counterparty.signSignature = input.signature
+        try await counterparty.save(on: req.db)
+
+        // Auto-transition to signed when all counterparties have signed
+        if propose.counterparties.allSatisfy({ $0.signSignature != nil }) {
+            propose.proposeStatus = .signed
+            try await propose.save(on: req.db)
         }
 
         return .ok
     }
 
-    func getOne(req: Request) async throws -> Propose {
-        // 1. URLからUUIDを取得
+    // DELETE /v1/proposes/:id
+    // proposed → dissolved
+    func dissolve(req: Request) async throws -> HTTPStatus {
+        let input = try req.content.decode(TransitionInput.self)
+
         guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
-            throw Abort(.badRequest, reason: "UUIDの形式が正しくないよ")
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
         }
 
-        // 2. DBから検索（署名リストも一緒に読み込む）
         guard let propose = try await Propose.query(on: req.db)
             .filter(\.$id == proposeID)
-            .with(\.$signatures) // ここで紐づく署名を全部持ってくる
+            .with(\.$counterparties)
             .first() else {
-            throw Abort(.notFound, reason: "そのProposeは見つからなかったよ")
+            throw Abort(.notFound, reason: "Propose not found")
         }
 
-        return propose
-    }
-
-    func list(req: Request) async throws -> Page<Propose> { // 戻り値を Page<T> に
-        guard let publicKey = req.query[String.self, at: "publicKey"] else {
-            throw Abort(.badRequest, reason: "publicKeyを指定してね")
+        guard propose.proposeStatus == .proposed else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be dissolved (current: \(propose.status))")
         }
 
-        return try await Propose.query(on: req.db)
-            .join(Signature.self, on: \Propose.$id == \Signature.$propose.$id)
-            .filter(Signature.self, \.$publicKey == publicKey)
-            .with(\.$signatures)
-            .sort(\.$createdAt, .descending)
-            .paginate(for: req) // これが Page<Propose> を返してくれる
+        let isCreator = input.publicKey == propose.creatorPublicKey
+        let isCounterparty = propose.counterparties.contains { $0.publicKey == input.publicKey }
+        guard isCreator || isCounterparty else {
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can dissolve it")
+        }
+
+        // Signature verification: "dissolved." + proposeId + contentHash + timestamp
+        let message = "dissolved." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
+
+        propose.proposeStatus = .dissolved
+        try await propose.save(on: req.db)
+
+        return .ok
     }
 
-    // 署名検証ヘルパー関数
+    // PATCH /v1/proposes/:id/honor
+    // signed → honored (auto-transitions when creator + all counterparties have signed)
+    func honor(req: Request) async throws -> HTTPStatus {
+        let input = try req.content.decode(TransitionInput.self)
+
+        guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
+        }
+
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
+            throw Abort(.notFound, reason: "Propose not found")
+        }
+
+        guard propose.proposeStatus == .signed else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
+        }
+
+        let isCreator = input.publicKey == propose.creatorPublicKey
+        let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
+        guard isCreator || counterparty != nil else {
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can honor it")
+        }
+
+        // Signature verification: "honored." + proposeId + contentHash + timestamp
+        let message = "honored." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
+
+        let creatorHonored: Bool
+        if isCreator {
+            propose.honorCreatorSignature = input.signature
+            try await propose.save(on: req.db)
+            creatorHonored = true
+        } else {
+            counterparty!.honorSignature = input.signature
+            try await counterparty!.save(on: req.db)
+            creatorHonored = propose.honorCreatorSignature != nil
+        }
+
+        // Auto-transition to honored when all participants have signed
+        if creatorHonored && propose.counterparties.allSatisfy({ $0.honorSignature != nil }) {
+            propose.proposeStatus = .honored
+            try await propose.save(on: req.db)
+        }
+
+        return .ok
+    }
+
+    // PATCH /v1/proposes/:id/part
+    // signed → parted (auto-transitions when creator + all counterparties have signed)
+    func part(req: Request) async throws -> HTTPStatus {
+        let input = try req.content.decode(TransitionInput.self)
+
+        guard let proposeID = req.parameters.get("proposeID", as: UUID.self) else {
+            throw Abort(.badRequest, reason: "Invalid Propose ID")
+        }
+
+        guard let propose = try await Propose.query(on: req.db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else {
+            throw Abort(.notFound, reason: "Propose not found")
+        }
+
+        guard propose.proposeStatus == .signed else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be parted (current: \(propose.status))")
+        }
+
+        let isCreator = input.publicKey == propose.creatorPublicKey
+        let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
+        guard isCreator || counterparty != nil else {
+            throw Abort(.forbidden, reason: "Only a participant of this Propose can part it")
+        }
+
+        // Signature verification: "parted." + proposeId + contentHash + timestamp
+        let message = "parted." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
+
+        if isCreator {
+            propose.partCreatorSignature = input.signature
+        } else {
+            counterparty!.partSignature = input.signature
+            try await counterparty!.save(on: req.db)
+        }
+
+        // Transition to parted immediately when either party requests it
+        propose.proposeStatus = .parted
+        try await propose.save(on: req.db)
+
+        return .ok
+    }
+
+    // MARK: - Signature Verification Helper
+
     private func verifySignature(publicKey: String, signature: String, message: String) throws {
-        // Base64デコード
         guard let publicKeyData = Data(base64Encoded: publicKey) else {
-            throw Abort(.badRequest, reason: "公開鍵のBase64デコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to Base64-decode the public key")
         }
 
         guard let signatureData = Data(base64Encoded: signature) else {
-            throw Abort(.badRequest, reason: "署名のBase64デコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to Base64-decode the signature")
         }
 
         guard let messageData = message.data(using: .utf8) else {
-            throw Abort(.badRequest, reason: "メッセージのエンコードに失敗しました")
+            throw Abort(.badRequest, reason: "Failed to encode the message")
         }
 
-        // P-256公開鍵を復元
         let publicKeyObj: P256.Signing.PublicKey
         do {
             publicKeyObj = try P256.Signing.PublicKey(x963Representation: publicKeyData)
         } catch {
-            throw Abort(.badRequest, reason: "公開鍵の形式が無効です: \(error.localizedDescription)")
+            throw Abort(.badRequest, reason: "Invalid public key format")
         }
 
-        // ECDSA署名を復元
         let ecdsaSignature: P256.Signing.ECDSASignature
         do {
             ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signatureData)
         } catch {
-            throw Abort(.badRequest, reason: "署名の形式が無効です: \(error.localizedDescription)")
+            throw Abort(.badRequest, reason: "Invalid signature format")
         }
 
-        // 署名検証
-        let isValid = publicKeyObj.isValidSignature(ecdsaSignature, for: messageData)
-        if !isValid {
-            throw Abort(.unauthorized, reason: "署名検証に失敗しました。公開鍵と署名が一致しません")
-        }
-    }
-    
-    // 入力サイズ検証ヘルパー関数
-    private func validateInputSizes(input: ProposeInput) throws {
-        // payloadHashの長さ制限（256文字まで）
-        guard input.payloadHash.count <= 256 else {
-            throw Abort(.badRequest, reason: "payloadHashは256文字以下である必要があります")
-        }
-        
-        // 署名数の上限（1000個まで）
-        guard input.signatures.count <= 1000 else {
-            throw Abort(.badRequest, reason: "署名は1000個以下である必要があります")
-        }
-        
-        // 各署名のフィールドサイズをチェック
-        for (index, sig) in input.signatures.enumerated() {
-            // 公開鍵の長さ制限（Base64エンコード後で500文字まで）
-            guard sig.publicKey.count <= 500 else {
-                throw Abort(.badRequest, reason: "署名[\(index)]の公開鍵が長すぎます（最大500文字）")
-            }
-            
-            // 署名データの長さ制限（Base64エンコード後で500文字まで）
-            guard sig.signature.count <= 500 else {
-                throw Abort(.badRequest, reason: "署名[\(index)]の署名データが長すぎます（最大500文字）")
-            }
+        guard publicKeyObj.isValidSignature(ecdsaSignature, for: messageData) else {
+            throw Abort(.unauthorized, reason: "Signature verification failed")
         }
     }
 }

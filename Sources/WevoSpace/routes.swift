@@ -14,7 +14,7 @@ struct InfoResponse: Content {
 }
 
 func routes(_ app: Application) throws {
-    // ヘルスチェックエンドポイント（監視用）
+    // Health check endpoint (for monitoring)
     app.get("health") { req async -> [String: String] in
         return [
             "status": "ok",
@@ -22,7 +22,7 @@ func routes(_ app: Application) throws {
         ]
     }
 
-    // サーバー情報・ケイパビリティ（永久不変）
+    // Server info and capabilities (immutable)
     app.get("info") { req async -> InfoResponse in
         return InfoResponse(
             protocolName: "wevo",

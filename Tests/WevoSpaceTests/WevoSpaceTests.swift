@@ -19,6 +19,27 @@ struct WevoSpaceTests {
         }
         try await app.asyncShutdown()
     }
-    
-}
 
+    @Test("Health check route returns ok")
+    func healthCheck() async throws {
+        try await withApp { app in
+            try await app.testing().test(.GET, "health", afterResponse: { res async in
+                #expect(res.status == .ok)
+                let body = try? res.content.decode([String: String].self)
+                #expect(body?["status"] == "ok")
+            })
+        }
+    }
+
+    @Test("Info route returns protocol metadata")
+    func infoRoute() async throws {
+        try await withApp { app in
+            try await app.testing().test(.GET, "info", afterResponse: { res async in
+                #expect(res.status == .ok)
+                let body = try? res.content.decode(InfoResponse.self)
+                #expect(body?.protocolName == "wevo")
+                #expect(body?.version == "0.1.0")
+            })
+        }
+    }
+}

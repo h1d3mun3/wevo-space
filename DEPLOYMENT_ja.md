@@ -1,69 +1,69 @@
-# Deployment Guide
+# デプロイガイド
 
-This guide explains how to deploy WevoSpace to production.
+本番環境へのデプロイ方法を説明します。
 
-> 日本語版: [DEPLOYMENT_ja.md](DEPLOYMENT_ja.md)
+> English version: [DEPLOYMENT.md](DEPLOYMENT.md)
 
-## 📋 Pre-Deployment Checklist
+## 📋 デプロイ前チェックリスト
 
-### Required
-- [ ] PostgreSQL database setup
-- [ ] Environment variables configured
-- [ ] HTTPS configured (reverse proxy)
-- [ ] Migrations run
+### 必須項目
+- [ ] PostgreSQLデータベースのセットアップ
+- [ ] 環境変数の設定
+- [ ] HTTPS対応（リバースプロキシ）
+- [ ] マイグレーション実行
 
-### Recommended
-- [ ] Log monitoring configured
-- [ ] Backup strategy in place
-- [ ] Health check / uptime monitoring
-- [ ] Error tracking
+### 推奨項目
+- [ ] ログ監視の設定
+- [ ] バックアップ戦略
+- [ ] 死活監視（ヘルスチェック）
+- [ ] エラートラッキング
 
 ---
 
-## Cloud Platforms
+## クラウドプラットフォーム
 
 ### Heroku
 
-#### 1. Install Heroku CLI
+#### 1. Heroku CLI のインストール
 
 ```bash
 brew tap heroku/brew && brew install heroku
 heroku login
 ```
 
-#### 2. Create Application
+#### 2. アプリケーション作成
 
 ```bash
-# Create Heroku app
+# Herokuアプリ作成
 heroku create your-app-name
 
-# Add PostgreSQL add-on
+# PostgreSQLアドオン追加
 heroku addons:create heroku-postgresql:mini
 
-# Add Swift buildpack
+# Swiftビルドパック追加
 heroku buildpacks:set vapor/vapor
 ```
 
-#### 3. Configure Environment Variables
+#### 3. 環境変数設定
 
 ```bash
-# DATABASE_URL is set automatically
+# 自動的にDATABASE_URLが設定されます
 heroku config
 
-# Additional environment variables
+# 追加の環境変数
 heroku config:set ENVIRONMENT=production
 heroku config:set LOG_LEVEL=info
 ```
 
-#### 4. Deploy
+#### 4. デプロイ
 
 ```bash
 git push heroku main
 
-# Run migrations
+# マイグレーション実行
 heroku run WevoSpace migrate --env production
 
-# View logs
+# ログ確認
 heroku logs --tail
 ```
 
@@ -71,35 +71,35 @@ heroku logs --tail
 
 ### Railway
 
-#### 1. Create Project
+#### 1. プロジェクト作成
 
 ```bash
-# Install Railway CLI
+# Railway CLI のインストール
 npm install -g @railway/cli
 
-# Login
+# ログイン
 railway login
 
-# Initialize project
+# プロジェクト初期化
 railway init
 ```
 
-#### 2. Add PostgreSQL
+#### 2. PostgreSQL追加
 
-From the Railway dashboard:
+Railwayダッシュボードから：
 1. New → Database → PostgreSQL
-2. `DATABASE_URL` is set automatically
+2. `DATABASE_URL` が自動的に設定されます
 
-#### 3. Deploy
+#### 3. デプロイ
 
 ```bash
-# Deploy
+# デプロイ
 railway up
 
-# Check environment variables
+# 環境変数確認
 railway variables
 
-# View logs
+# ログ確認
 railway logs
 ```
 
@@ -107,7 +107,7 @@ railway logs
 
 ### Render
 
-#### 1. Create render.yaml
+#### 1. render.yaml 作成
 
 ```yaml
 services:
@@ -132,46 +132,46 @@ databases:
     user: vapor
 ```
 
-#### 2. Deploy
+#### 2. デプロイ
 
-1. Connect your GitHub repository to Render
-2. Build and deploy starts automatically
-3. Run migrations manually:
+1. GitHubリポジトリをRenderに接続
+2. 自動的にビルド・デプロイが開始
+3. マイグレーションは手動で実行：
 
 ```bash
-# From Render Shell
+# Render Shell から
 ./WevoSpace migrate --env production
 ```
 
 ---
 
-## VPS / Dedicated Server
+## VPS / 専用サーバー
 
-### Manual Setup on Ubuntu 22.04
+### Ubuntu 22.04 での手動セットアップ
 
-#### 1. Install Dependencies
+#### 1. 依存関係のインストール
 
 ```bash
-# Install Swift
+# Swift インストール
 wget https://download.swift.org/swift-6.0-release/ubuntu2204/swift-6.0-RELEASE/swift-6.0-RELEASE-ubuntu22.04.tar.gz
 tar xzf swift-6.0-RELEASE-ubuntu22.04.tar.gz
 sudo mv swift-6.0-RELEASE-ubuntu22.04 /usr/share/swift
 echo 'export PATH=/usr/share/swift/usr/bin:$PATH' >> ~/.bashrc
 source ~/.bashrc
 
-# Required packages
+# 必要なパッケージ
 sudo apt update
 sudo apt install -y git postgresql postgresql-contrib nginx
 ```
 
-#### 2. PostgreSQL Setup
+#### 2. PostgreSQL セットアップ
 
 ```bash
-# Start PostgreSQL
+# PostgreSQL起動
 sudo systemctl start postgresql
 sudo systemctl enable postgresql
 
-# Create database
+# データベース作成
 sudo -u postgres psql <<EOF
 CREATE USER vapor WITH PASSWORD 'your-secure-password';
 CREATE DATABASE wevospace OWNER vapor;
@@ -179,25 +179,25 @@ GRANT ALL PRIVILEGES ON DATABASE wevospace TO vapor;
 EOF
 ```
 
-#### 3. Build the Application
+#### 3. アプリケーションのビルド
 
 ```bash
-# Clone repository
+# リポジトリクローン
 git clone https://github.com/yourusername/WevoSpace.git
 cd WevoSpace
 
-# Configure environment
+# 環境変数設定
 cp .env.example .env
-nano .env  # edit as needed
+nano .env  # 編集
 
-# Build
+# ビルド
 swift build -c release
 
-# Run migrations
+# マイグレーション
 .build/release/WevoSpace migrate --env production
 ```
 
-#### 4. Create Systemd Service
+#### 4. Systemd サービス作成
 
 `/etc/systemd/system/wevospace.service`:
 
@@ -226,7 +226,7 @@ Environment=ENVIRONMENT=production
 WantedBy=multi-user.target
 ```
 
-Start the service:
+起動：
 
 ```bash
 sudo systemctl daemon-reload
@@ -235,7 +235,7 @@ sudo systemctl enable wevospace
 sudo systemctl status wevospace
 ```
 
-#### 5. Nginx Reverse Proxy
+#### 5. Nginx リバースプロキシ
 
 `/etc/nginx/sites-available/wevospace`:
 
@@ -254,7 +254,7 @@ server {
 }
 ```
 
-Enable:
+有効化：
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/wevospace /etc/nginx/sites-enabled/
@@ -262,62 +262,62 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-#### 6. SSL Certificate (Optional)
+#### 6. SSL証明書の設定（オプション）
 
-If you have a domain, obtain a free SSL certificate from Let's Encrypt:
+HTTPSを使用する場合は、Let's Encryptで無料SSL証明書を取得できます：
 
 ```bash
-# Install Certbot
+# Certbot インストール
 sudo apt install certbot python3-certbot-nginx
 
-# Obtain SSL certificate
+# SSL証明書取得（ドメインがある場合）
 sudo certbot --nginx -d api.yourdomain.com
 
-# Auto-renewal is already enabled
+# 自動更新設定（既に有効）
 sudo systemctl status certbot.timer
 ```
 
-**Note**: If running on an IP address only, SSL is not required and HTTP is sufficient.
+**Note**: IPアドレスでの運用の場合、SSL証明書は不要です。HTTPで稼働します。
 
 ---
 
-## Docker Deployment
+## Docker デプロイ
 
-### Dockerfile
+### Dockerfile 作成
 
 ```dockerfile
-# Build stage
+# ビルドステージ
 FROM swift:6.0 as build
 
 WORKDIR /build
 
-# Copy dependencies
+# 依存関係をコピー
 COPY Package.* ./
 RUN swift package resolve
 
-# Copy source
+# ソースコードをコピー
 COPY . .
 
-# Release build
+# リリースビルド
 RUN swift build -c release
 
-# Run stage
+# 実行ステージ
 FROM swift:6.0-slim
 
 WORKDIR /app
 
-# Copy build artifact
+# ビルド成果物をコピー
 COPY --from=build /build/.build/release/WevoSpace ./WevoSpace
 
-# Expose port
+# ポート公開
 EXPOSE 8080
 
-# Run
+# 実行
 ENTRYPOINT ["./WevoSpace"]
 CMD ["serve", "--env", "production", "--hostname", "0.0.0.0", "--port", "8080"]
 ```
 
-### docker-compose.yml (Production)
+### docker-compose.yml（本番用）
 
 ```yaml
 version: '3.8'
@@ -356,26 +356,26 @@ networks:
     driver: bridge
 ```
 
-### Deploy
+### デプロイ
 
 ```bash
-# Build & start
+# ビルド & 起動
 docker-compose up -d
 
-# Run migrations
+# マイグレーション
 docker-compose exec app ./WevoSpace migrate --env production
 
-# View logs
+# ログ確認
 docker-compose logs -f app
 ```
 
 ---
 
-## Monitoring & Maintenance
+## 監視とメンテナンス
 
-### Health Check Endpoint
+### ヘルスチェックエンドポイント
 
-Add to `routes.swift`:
+`routes.swift` に追加：
 
 ```swift
 app.get("health") { req async in
@@ -383,7 +383,7 @@ app.get("health") { req async in
 }
 ```
 
-### Log Monitoring
+### ログ監視
 
 ```bash
 # Systemd
@@ -396,82 +396,82 @@ docker-compose logs -f app
 heroku logs --tail
 ```
 
-### Database Backup
+### データベースバックアップ
 
 ```bash
-# PostgreSQL backup
+# PostgreSQL バックアップ
 pg_dump -U vapor wevospace > backup_$(date +%Y%m%d).sql
 
-# Restore
+# リストア
 psql -U vapor wevospace < backup_20260307.sql
 ```
 
 ---
 
-## Troubleshooting
+## トラブルシューティング
 
-### Application Won't Start
+### アプリケーションが起動しない
 
 ```bash
-# Check logs
+# ログ確認
 sudo journalctl -u wevospace -n 100
 
-# Check database connection
+# データベース接続確認
 psql -U vapor -d wevospace -h localhost
 
-# Check port
+# ポート確認
 sudo lsof -i :8080
 ```
 
-### Migration Errors
+### マイグレーションエラー
 
 ```bash
-# Check migration status
+# マイグレーション状態確認
 ./WevoSpace migrate --env production
 
-# Revert all migrations
+# 既存のマイグレーションをすべて取り消し
 ./WevoSpace migrate --revert --all --env production
 
-# Re-run
+# 再実行
 ./WevoSpace migrate --env production
 ```
 
-### Performance Issues
+### パフォーマンス問題
 
 ```bash
-# Check PostgreSQL connection count
+# PostgreSQL接続数確認
 SELECT count(*) FROM pg_stat_activity;
 
-# Enable slow query logging
+# スロークエリログ有効化
 ALTER SYSTEM SET log_min_duration_statement = 1000;
 SELECT pg_reload_conf();
 ```
 
 ---
 
-## Security Recommendations
+## セキュリティ推奨事項
 
-### Production
+### 本番環境
 
-1. ✅ Use strong database passwords
-2. ⚠️ HTTPS recommended (if you have a domain)
-3. ✅ Firewall configuration (UFW, etc.)
-4. ✅ Regular security updates
-5. ✅ Monitoring and alerting
-6. ✅ Automated backups
+1. ✅ 強力なデータベースパスワード
+2. ⚠️ HTTPS推奨（ドメインがある場合）
+3. ✅ ファイアウォール設定（UFW等）
+4. ✅ 定期的なセキュリティアップデート
+5. ✅ 監視・アラート設定
+6. ✅ バックアップの自動化
 
-**Note**: Running on an IP address only, HTTP is acceptable. Migrating to HTTPS is recommended when a domain is obtained.
+**Note**: IPアドレスでの運用の場合、HTTPで問題ありません。将来的にドメインを取得した際にHTTPSへ移行することを推奨します。
 
-### Environment Variables
+### 環境変数
 
-Never expose the following:
+絶対に公開しないこと：
 - `DATABASE_PASSWORD`
 - `DATABASE_URL`
-- Any other sensitive credentials
+- その他の機密情報
 
 ---
 
-## References
+## 参考リンク
 
 - [Vapor Deployment Guide](https://docs.vapor.codes/deploy/overview/)
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)

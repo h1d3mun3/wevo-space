@@ -1,10 +1,3 @@
-//
-//  RateLimitMiddlewareTests.swift
-//  WevoSpace
-//
-//  Created on 3/7/26.
-//
-
 @testable import WevoSpace
 import VaporTesting
 import Testing
@@ -13,41 +6,41 @@ import FluentSQLiteDriver
 
 @Suite("RateLimitMiddleware Tests", .serialized)
 struct RateLimitMiddlewareTests {
-    // エラーレスポンスのデコード用構造体
+    // Struct for decoding error responses
     private struct ErrorResponse: Codable {
         let error: Bool
         let reason: String
     }
-    
+
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
-            // テストごとにインメモリデータベースを使用
+            // Use in-memory database per test
             app.databases.use(.sqlite(.memory), as: .sqlite)
-            
-            // マイグレーションを登録
-            app.migrations.add(CreateWevoProposeTables())
-            
-            // マイグレーション実行
+
+            // Register migrations
+            app.migrations.add(CreateProposesTable())
+
+            // Run migrations
             try await app.autoMigrate()
-            
-            // Rate Limitingを適用（テスト用: 5リクエスト/10秒）
+
+            // Apply rate limiting (test config: 5 requests / 10 seconds)
             let rateLimiter = RateLimitMiddleware(requestLimit: 5, timeWindow: 10)
-            
-            // ルートを定義（Rate Limitミドルウェア付き）
+
+            // Define routes with rate limit middleware
             let limited = app.grouped(rateLimiter)
-            
+
             limited.get { req async in
                 "It works!"
             }
-            
+
             limited.get("hello") { req async -> String in
                 "Hello, world!"
             }
-            
-            // ProposeControllerは個別に登録
+
+            // Register ProposeController separately
             try limited.register(collection: ProposeController())
-            
+
             try await test(app)
             try await app.autoRevert()
         } catch {
@@ -57,102 +50,102 @@ struct RateLimitMiddlewareTests {
         }
         try await app.asyncShutdown()
     }
-    
-    @Test("Rate Limit以内のリクエストは成功する")
+
+    @Test("Requests within rate limit succeed")
     func requestsWithinLimit() async throws {
         try await withApp { app in
-            // 5回のリクエストは成功するはず
+            // All 5 requests should succeed
             for i in 1...5 {
                 try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
-                    #expect(res.status == .ok, "リクエスト\(i)は成功するべき")
-                    
-                    // Rate Limitヘッダーの確認
+                    #expect(res.status == .ok, "Request \(i) should succeed")
+
+                    // Verify rate limit headers
                     let limit = res.headers.first(name: "X-RateLimit-Limit")
-                    #expect(limit == "5", "X-RateLimit-Limit が正しく設定されている: \(limit ?? "nil")")
-                    
+                    #expect(limit == "5", "X-RateLimit-Limit should be set correctly: \(limit ?? "nil")")
+
                     let remaining = res.headers.first(name: "X-RateLimit-Remaining")
-                    #expect(remaining != nil, "X-RateLimit-Remaining が存在する: \(remaining ?? "nil")")
+                    #expect(remaining != nil, "X-RateLimit-Remaining should exist: \(remaining ?? "nil")")
                 })
             }
         }
     }
-    
-    @Test("Rate Limitを超えるとエラーになる")
+
+    @Test("Exceeding rate limit returns an error")
     func requestsExceedingLimit() async throws {
         try await withApp { app in
-            // 5回のリクエストを送る
+            // Send 5 requests
             for _ in 1...5 {
                 try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
                     #expect(res.status == .ok)
                 })
             }
-            
-            // 6回目のリクエストは失敗するはず
+
+            // The 6th request should fail
             try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
-                #expect(res.status == .tooManyRequests, "6回目のリクエストはRate Limitエラーになるべき")
-                
-                // Rate Limitヘッダーの確認
+                #expect(res.status == .tooManyRequests, "The 6th request should return a rate limit error")
+
+                // Verify rate limit headers
                 let limit = res.headers.first(name: "X-RateLimit-Limit")
                 #expect(limit == "5")
-                
+
                 let remaining = res.headers.first(name: "X-RateLimit-Remaining")
                 #expect(remaining == "0")
-                
+
                 let retryAfter = res.headers.first(name: "Retry-After")
-                #expect(retryAfter != nil, "Retry-After ヘッダーが存在する")
-                
-                // レスポンスボディの確認
+                #expect(retryAfter != nil, "Retry-After header should exist")
+
+                // Verify response body
                 let errorResponse = try res.content.decode(ErrorResponse.self)
-                #expect(errorResponse.error == true, "error フィールドが true")
-                #expect(errorResponse.reason.isEmpty == false, "エラーメッセージが含まれている")
+                #expect(errorResponse.error == true, "error field should be true")
+                #expect(errorResponse.reason.isEmpty == false, "Error message should be present")
             })
         }
     }
-    
-    @Test("異なるエンドポイントでもRate Limitが適用される")
+
+    @Test("Rate limit applies across different endpoints")
     func rateLimitAcrossEndpoints() async throws {
         try await withApp { app in
-            // hello エンドポイントに3回
+            // 3 requests to hello endpoint
             for _ in 1...3 {
                 try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
                     #expect(res.status == .ok)
                 })
             }
-            
-            // ルートエンドポイントに2回
+
+            // 2 requests to root endpoint
             for _ in 1...2 {
                 try await app.testing().test(.GET, "", afterResponse: { res async throws in
                     #expect(res.status == .ok)
                 })
             }
-            
-            // 6回目のリクエスト（どのエンドポイントでも）は失敗
+
+            // The 6th request (any endpoint) should fail
             try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
                 #expect(res.status == .tooManyRequests)
             })
         }
     }
-    
-    @Test("Rate Limitヘッダーが正しく設定される")
+
+    @Test("Rate limit headers are set correctly")
     func rateLimitHeaders() async throws {
         try await withApp { app in
             try await app.testing().test(.GET, "hello", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                
-                // 必須ヘッダーの確認
+
+                // Verify required headers
                 let limit = res.headers.first(name: "X-RateLimit-Limit")
                 #expect(limit == "5", "X-RateLimit-Limit: 5")
-                
+
                 let remaining = res.headers.first(name: "X-RateLimit-Remaining")
-                #expect(remaining == "4", "1回リクエストしたので残り4")
-                
+                #expect(remaining == "4", "After 1 request, remaining should be 4")
+
                 let reset = res.headers.first(name: "X-RateLimit-Reset")
-                #expect(reset != nil, "X-RateLimit-Reset が存在する")
-                
-                // リセット時刻が未来であることを確認
+                #expect(reset != nil, "X-RateLimit-Reset should exist")
+
+                // Verify reset time is in the future
                 if let resetString = reset, let resetTimestamp = Double(resetString) {
                     let resetDate = Date(timeIntervalSince1970: resetTimestamp)
-                    #expect(resetDate > Date(), "リセット時刻は未来")
+                    #expect(resetDate > Date(), "Reset time should be in the future")
                 }
             })
         }
