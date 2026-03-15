@@ -50,12 +50,12 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "proposeIdの形式が無効です")
         }
 
-        // 重複チェック
+        // Duplicate check
         if try await Propose.find(proposeId, on: req.db) != nil {
             throw Abort(.conflict, reason: "同じIDのProposeが既に存在します")
         }
 
-        // 署名検証: proposeId + contentHash + counterpartyPublicKey + createdAt
+        // Signature verification: proposeId + contentHash + counterpartyPublicKey + createdAt
         let message = input.proposeId + input.contentHash + input.counterpartyPublicKey + input.createdAt
         try verifySignature(publicKey: input.creatorPublicKey, signature: input.creatorSignature, message: message)
 
@@ -106,7 +106,7 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "createdAtがProposeの値と一致しません")
         }
 
-        // 署名検証: proposeId + contentHash + counterpartyPublicKey + createdAt
+        // Signature verification: proposeId + contentHash + counterpartyPublicKey + createdAt
         let message = propose.id!.uuidString + propose.contentHash + propose.counterpartyPublicKey + propose.createdAt
         try verifySignature(publicKey: propose.counterpartyPublicKey, signature: input.counterpartySignature, message: message)
 
@@ -138,7 +138,7 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "このProposeの参加者のみが解消できます")
         }
 
-        // 署名検証: "dissolved." + proposeId + contentHash + timestamp
+        // Signature verification: "dissolved." + proposeId + contentHash + timestamp
         let message = "dissolved." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
@@ -149,7 +149,7 @@ struct ProposeController: RouteCollection {
     }
 
     // PATCH /v1/proposes/:id/honor
-    // signed → honored（両者の署名が揃ったら自動遷移）
+    // signed → honored (auto-transitions when both signatures are present)
     func honor(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(TransitionInput.self)
 
@@ -171,7 +171,7 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "このProposeの参加者のみがhonorできます")
         }
 
-        // 署名検証: "honored." + proposeId + contentHash + timestamp
+        // Signature verification: "honored." + proposeId + contentHash + timestamp
         let message = "honored." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
@@ -181,7 +181,7 @@ struct ProposeController: RouteCollection {
             propose.honorCounterpartySignature = input.signature
         }
 
-        // 両者の署名が揃ったら自動でhonored
+        // Auto-transition to honored when both signatures are present
         if propose.honorCreatorSignature != nil && propose.honorCounterpartySignature != nil {
             propose.proposeStatus = .honored
         }
@@ -192,7 +192,7 @@ struct ProposeController: RouteCollection {
     }
 
     // PATCH /v1/proposes/:id/part
-    // signed → parted（両者の署名が揃ったら自動遷移）
+    // signed → parted (auto-transitions when both signatures are present)
     func part(req: Request) async throws -> HTTPStatus {
         let input = try req.content.decode(TransitionInput.self)
 
@@ -214,7 +214,7 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "このProposeの参加者のみがpartできます")
         }
 
-        // 署名検証: "parted." + proposeId + contentHash + timestamp
+        // Signature verification: "parted." + proposeId + contentHash + timestamp
         let message = "parted." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
@@ -224,7 +224,7 @@ struct ProposeController: RouteCollection {
             propose.partCounterpartySignature = input.signature
         }
 
-        // 両者の署名が揃ったら自動でparted
+        // Auto-transition to parted when both signatures are present
         if propose.partCreatorSignature != nil && propose.partCounterpartySignature != nil {
             propose.proposeStatus = .parted
         }
@@ -234,7 +234,7 @@ struct ProposeController: RouteCollection {
         return .ok
     }
 
-    // MARK: - 署名検証ヘルパー
+    // MARK: - Signature Verification Helper
 
     private func verifySignature(publicKey: String, signature: String, message: String) throws {
         guard let publicKeyData = Data(base64Encoded: publicKey) else {

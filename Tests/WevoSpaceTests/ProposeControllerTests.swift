@@ -24,7 +24,7 @@ struct ProposeControllerTests {
         try await app.asyncShutdown()
     }
 
-    // MARK: - ヘルパー
+    // MARK: - Helpers
 
     private struct KeyPair {
         let privateKey: P256.Signing.PrivateKey
@@ -42,14 +42,14 @@ struct ProposeControllerTests {
         }
     }
 
-    /// Base64公開鍵をURLクエリパラメータ用にエンコードする（+を%2Bに変換）
+    /// Encodes a Base64 public key for use as a URL query parameter (encodes + as %2B)
     private func encodePublicKey(_ key: String) -> String {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "+")
         return key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
     }
 
-    /// テスト用のProposeを作成して返す
+    /// Creates a Propose for testing and returns its key data
     private func createPropose(
         app: Application,
         proposeId: UUID = UUID(),

@@ -76,7 +76,7 @@ struct RequestSizeLimitTests {
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                // サイズ制限では拒否されない（署名は有効なのでcreated）
+                // Should not be rejected by size limit (valid signature → created)
                 #expect(res.status == .created)
             })
         }
@@ -93,7 +93,7 @@ struct RequestSizeLimitTests {
             }, afterResponse: { res async throws in
                 #expect(
                     res.status == .badRequest || res.status == .payloadTooLarge,
-                    "2MBを超えるリクエストはサイズ制限または検証で拒否される (actual: \(res.status))"
+                    "Requests over 2 MB should be rejected by size limit or validation (actual: \(res.status))"
                 )
             })
         }
@@ -110,7 +110,7 @@ struct RequestSizeLimitTests {
             }, afterResponse: { res async throws in
                 #expect(
                     res.status == .badRequest || res.status == .payloadTooLarge,
-                    "2MBを超えるリクエストはサイズ制限または検証で拒否される (actual: \(res.status))"
+                    "Requests over 2 MB should be rejected by size limit or validation (actual: \(res.status))"
                 )
             })
         }

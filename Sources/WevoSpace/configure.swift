@@ -9,13 +9,13 @@ public func configure(_ app: Application) async throws {
     // uncomment to serve files from /Public folder
     // app.middleware.use(FileMiddleware(publicDirectory: app.directory.publicDirectory))
 
-    // リクエストサイズ制限: 1MBまで
+    // Request size limit: up to 1 MB
     app.routes.defaultMaxBodySize = "1mb"
 
-    // Rate Limiting: 1分間に60リクエストまで
+    // Rate limiting: up to 60 requests per minute
     app.middleware.use(RateLimitMiddleware(requestLimit: 60, timeWindow: 60))
 
-    // データベース設定
+    // Database configuration
     try configureDatabase(app)
 
     app.migrations.add(CreateProposesTable())
@@ -24,22 +24,22 @@ public func configure(_ app: Application) async throws {
     try routes(app)
 }
 
-// データベース設定を環境に応じて切り替え
+// Switch database configuration based on environment
 private func configureDatabase(_ app: Application) throws {
-    // 環境変数でデータベースURLが指定されている場合はPostgreSQLを使用
+    // Use PostgreSQL if DATABASE_URL environment variable is set
     if let databaseURL = Environment.get("DATABASE_URL") {
         try configureDatabaseURL(app, url: databaseURL)
     } else if app.environment == .production {
-        // 本番環境では個別の環境変数からPostgreSQL設定を読み取る
+        // In production, read PostgreSQL settings from individual environment variables
         try configurePostgreSQL(app)
     } else {
-        // 開発/テスト環境ではSQLiteを使用
+        // Use SQLite in development/test environments
         app.databases.use(.sqlite(.file("db.sqlite")), as: .sqlite)
         app.logger.info("Using SQLite database (development mode)")
     }
 }
 
-// DATABASE_URL環境変数からPostgreSQL接続設定を解析
+// Parse PostgreSQL connection settings from DATABASE_URL environment variable
 private func configureDatabaseURL(_ app: Application, url: String) throws {
     guard let postgresConfig = try? PostgresConfiguration(url: url) else {
         throw Abort(.internalServerError, reason: "Invalid DATABASE_URL format")
@@ -49,7 +49,7 @@ private func configureDatabaseURL(_ app: Application, url: String) throws {
     app.logger.info("Using PostgreSQL database from DATABASE_URL")
 }
 
-// 個別の環境変数からPostgreSQL設定を構築
+// Build PostgreSQL settings from individual environment variables
 private func configurePostgreSQL(_ app: Application) throws {
     let hostname = Environment.get("DATABASE_HOST") ?? "localhost"
     let port = Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432
