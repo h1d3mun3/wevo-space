@@ -210,6 +210,28 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("counterpartyPublicKeysが空だとエラーになる")
+    func createProposeWithEmptyCounterpartiesReturnsBadRequest() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let creator = KeyPair()
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: "test-hash",
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: "dummy",
+                counterpartyPublicKeys: [],
+                createdAt: "2026-01-01T00:00:00Z"
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
     // MARK: - GET /v1/proposes/:id
 
     @Test("既存のProposeをIDで取得できる")
@@ -411,6 +433,24 @@ struct ProposeControllerTests {
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .notFound)
+            })
+        }
+    }
+
+    @Test("counterpartyでない人がsignすると403になる")
+    func signByNonCounterpartyReturnsForbidden() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, createdAt, _, _) = try await createPropose(app: app)
+
+            let thirdParty = KeyPair()
+            let message = proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + createdAt
+            let sig = try thirdParty.sign(message)
+            let input = SignInput(signerPublicKey: thirdParty.publicKeyBase64, signature: sig, createdAt: createdAt)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .forbidden)
             })
         }
     }
@@ -935,6 +975,61 @@ struct ProposeControllerTests {
                 try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, createdAt: createdAt))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    // MARK: - 複数 counterparty (1:n)
+
+    @Test("2人のcounterpartyが両方署名するとsigned状態になる")
+    func signWithTwoCounterpartiesTransitionsToSigned() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-content-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let counterparty1 = KeyPair()
+            let counterparty2 = KeyPair()
+
+            // Signature message: counterpartyPublicKeys sorted & joined
+            let sortedKeys = [counterparty1.publicKeyBase64, counterparty2.publicKeyBase64].sorted().joined()
+            let createMessage = proposeId.uuidString + contentHash + sortedKeys + createdAt
+            let creatorSig = try creator.sign(createMessage)
+
+            let createInput = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: creatorSig,
+                counterpartyPublicKeys: [counterparty1.publicKeyBase64, counterparty2.publicKeyBase64],
+                createdAt: createdAt
+            )
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(createInput)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .created)
+            })
+
+            // counterparty1 が署名 → まだ proposed（counterparty2 未署名）
+            let sign1Message = proposeId.uuidString + contentHash + counterparty1.publicKeyBase64 + createdAt
+            let sig1 = try counterparty1.sign(sign1Message)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty1.publicKeyBase64, signature: sig1, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .proposed)
+            })
+
+            // counterparty2 が署名 → signed に遷移
+            let sign2Message = proposeId.uuidString + contentHash + counterparty2.publicKeyBase64 + createdAt
+            let sig2 = try counterparty2.sign(sign2Message)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty2.publicKeyBase64, signature: sig2, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .signed)
             })
         }
     }
