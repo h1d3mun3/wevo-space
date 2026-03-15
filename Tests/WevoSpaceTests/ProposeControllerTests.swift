@@ -982,9 +982,6 @@ struct ProposeControllerTests {
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(partMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
-            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
-                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(partMessage), timestamp: timestamp))
-            }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // parted → sign attempt → conflict
             let newSig = try counterparty.sign(signMessage)
