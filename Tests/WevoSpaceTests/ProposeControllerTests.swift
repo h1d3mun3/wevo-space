@@ -742,8 +742,8 @@ struct ProposeControllerTests {
 
     // MARK: - PATCH /v1/proposes/:id/part
 
-    @Test("Both parties parting transitions to parted state")
-    func partBothPartiesSuccess() async throws {
+    @Test("Creator parting immediately transitions to parted state")
+    func partByCreatorImmediatelyTransitionsToParted() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
@@ -759,17 +759,36 @@ struct ProposeControllerTests {
             let timestamp = "2026-01-03T00:00:00Z"
             let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
 
-            // Creator parts
+            // Creator parts → immediately parted
             let creatorPartSig = try creator.sign(partMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let propose = try await Propose.find(proposeId, on: app.db)
-                #expect(propose?.proposeStatus == .signed)
+                #expect(propose?.proposeStatus == .parted)
+            })
+        }
+    }
+
+    @Test("Counterparty parting immediately transitions to parted state")
+    func partByCounterpartyImmediatelyTransitionsToParted() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
             })
 
-            // Counterparty parts → parted
+            let timestamp = "2026-01-03T00:00:00Z"
+            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+
+            // Counterparty parts → immediately parted
             let counterpartyPartSig = try counterparty.sign(partMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyPartSig, timestamp: timestamp))
@@ -843,8 +862,8 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("A second part signature from the same participant overwrites the first")
-    func partSamePartyTwiceIsAccepted() async throws {
+    @Test("A second part request after already parted returns 409")
+    func partAlreadyPartedReturnsConflict() async throws {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
@@ -862,22 +881,20 @@ struct ProposeControllerTests {
             let creatorPartSig = try creator.sign(partMessage)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp)
 
-            // First time (counterparty has not signed yet, still signed)
+            // First part → immediately parted
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let propose = try await Propose.find(proposeId, on: app.db)
-                #expect(propose?.proposeStatus == .signed)
+                #expect(propose?.proposeStatus == .parted)
             })
 
-            // Second time (signature overwrite; accepted as signed since parted is not yet complete)
+            // Second part → 409 conflict (already parted)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let propose = try await Propose.find(proposeId, on: app.db)
-                #expect(propose?.proposeStatus == .signed)
+                #expect(res.status == .conflict)
             })
         }
     }

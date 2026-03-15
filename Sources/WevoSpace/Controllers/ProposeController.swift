@@ -313,22 +313,16 @@ struct ProposeController: RouteCollection {
         let message = "parted." + propose.id!.uuidString + propose.contentHash + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
-        let creatorParted: Bool
         if isCreator {
             propose.partCreatorSignature = input.signature
-            try await propose.save(on: req.db)
-            creatorParted = true
         } else {
             counterparty!.partSignature = input.signature
             try await counterparty!.save(on: req.db)
-            creatorParted = propose.partCreatorSignature != nil
         }
 
-        // Auto-transition to parted when all participants have signed
-        if creatorParted && propose.counterparties.allSatisfy({ $0.partSignature != nil }) {
-            propose.proposeStatus = .parted
-            try await propose.save(on: req.db)
-        }
+        // Transition to parted immediately when either party requests it
+        propose.proposeStatus = .parted
+        try await propose.save(on: req.db)
 
         return .ok
     }
