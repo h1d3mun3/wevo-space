@@ -18,7 +18,7 @@ public func configure(_ app: Application) async throws {
     // データベース設定
     try configureDatabase(app)
 
-    app.migrations.add(CreateWevoProposeTables())
+    app.migrations.add(CreateProposesTable())
 
     // register routes
     try routes(app)

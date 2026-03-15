@@ -1,10 +1,3 @@
-//
-//  ProposeControllerTests.swift
-//  WevoSpace
-//
-//  Created by hidemune on 3/6/26.
-//
-
 @testable import WevoSpace
 import VaporTesting
 import Testing
@@ -17,18 +10,10 @@ struct ProposeControllerTests {
     private func withApp(_ test: (Application) async throws -> ()) async throws {
         let app = try await Application.make(.testing)
         do {
-            // テストごとにインメモリデータベースを使用
             app.databases.use(.sqlite(.memory), as: .sqlite)
-            
-            // マイグレーションを登録
-            app.migrations.add(CreateWevoProposeTables())
-            
-            // マイグレーション実行
+            app.migrations.add(CreateProposesTable())
             try await app.autoMigrate()
-            
-            // routesを登録
             try routes(app)
-            
             try await test(app)
             try await app.autoRevert()
         } catch {
@@ -38,97 +23,172 @@ struct ProposeControllerTests {
         }
         try await app.asyncShutdown()
     }
-    
-    // MARK: - Helper Methods
-    
-    /// テスト用の鍵ペアと署名を生成するヘルパー
-    private func generateTestSignature(message: String) throws -> (publicKey: String, signature: String, privateKey: P256.Signing.PrivateKey) {
-        let privateKey = P256.Signing.PrivateKey()
-        let messageData = Data(message.utf8)
-        let signature = try privateKey.signature(for: messageData)
-        
-        let publicKeyBase64 = privateKey.publicKey.x963Representation.base64EncodedString()
-        let signatureBase64 = signature.derRepresentation.base64EncodedString()
-        
-        return (publicKeyBase64, signatureBase64, privateKey)
+
+    // MARK: - ヘルパー
+
+    private struct KeyPair {
+        let privateKey: P256.Signing.PrivateKey
+        let publicKeyBase64: String
+
+        init() {
+            privateKey = P256.Signing.PrivateKey()
+            publicKeyBase64 = privateKey.publicKey.x963Representation.base64EncodedString()
+        }
+
+        func sign(_ message: String) throws -> String {
+            let data = Data(message.utf8)
+            let sig = try privateKey.signature(for: data)
+            return sig.derRepresentation.base64EncodedString()
+        }
     }
-    
-    // MARK: - Create Tests
-    
-    @Test("正常な署名でProposeを作成できる")
-    func createProposeWithValidSignature() async throws {
+
+    /// テスト用のProposeを作成して返す
+    private func createPropose(
+        app: Application,
+        proposeId: UUID = UUID(),
+        contentHash: String = "test-content-hash",
+        createdAt: String = "2026-01-01T00:00:00Z",
+        creatorKeyPair: KeyPair = KeyPair(),
+        counterpartyKeyPair: KeyPair = KeyPair()
+    ) async throws -> (proposeId: UUID, contentHash: String, createdAt: String, creator: KeyPair, counterparty: KeyPair) {
+        let message = proposeId.uuidString + contentHash + counterpartyKeyPair.publicKeyBase64 + createdAt
+        let creatorSig = try creatorKeyPair.sign(message)
+
+        let input = CreateProposeInput(
+            proposeId: proposeId.uuidString,
+            contentHash: contentHash,
+            creatorPublicKey: creatorKeyPair.publicKeyBase64,
+            creatorSignature: creatorSig,
+            counterpartyPublicKey: counterpartyKeyPair.publicKeyBase64,
+            createdAt: createdAt
+        )
+
+        try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            try req.content.encode(input)
+        }, afterResponse: { res async throws in
+            #expect(res.status == .created)
+        })
+
+        return (proposeId, contentHash, createdAt, creatorKeyPair, counterpartyKeyPair)
+    }
+
+    // MARK: - POST /v1/proposes
+
+    @Test("正常なProposeを作成できる")
+    func createProposeSuccess() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+
+            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let creatorSig = try creator.sign(message)
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: creatorSig,
+                counterpartyPublicKey: counterparty.publicKeyBase64,
+                createdAt: createdAt
             )
-            
+
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .created)
 
-                // DBに保存されたか確認
-                let propose = try await Propose.find(proposeID, on: app.db)
+                let propose = try await Propose.find(proposeId, on: app.db)
                 #expect(propose != nil)
-                #expect(propose?.payloadHash == payloadHash)
-                
-                // 署名も保存されたか確認
-                let signatures = try await Signature.query(on: app.db)
-                    .filter(\.$propose.$id == proposeID)
-                    .all()
-                #expect(signatures.count == 1)
-                #expect(signatures.first?.publicKey == publicKey)
-                #expect(signatures.first?.signatureData == signature)
+                #expect(propose?.contentHash == contentHash)
+                #expect(propose?.proposeStatus == .proposed)
+                #expect(propose?.creatorPublicKey == creator.publicKeyBase64)
+                #expect(propose?.counterpartyPublicKey == counterparty.publicKeyBase64)
             })
         }
     }
-    
+
     @Test("不正な署名でProposeを作成するとエラーになる")
     func createProposeWithInvalidSignature() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey, _, _) = try generateTestSignature(message: payloadHash)
-            
-            // 別のメッセージで署名を生成（不正な署名）
-            let (_, wrongSignature, _) = try generateTestSignature(message: "wrong-message")
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: wrongSignature)]
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+            let wrongSig = try creator.sign("wrong-message")
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: wrongSig,
+                counterpartyPublicKey: counterparty.publicKeyBase64,
+                createdAt: "2026-01-01T00:00:00Z"
             )
-            
+
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .unauthorized)
-                
-                // DBに保存されていないことを確認
-                let propose = try await Propose.find(proposeID, on: app.db)
+                let propose = try await Propose.find(proposeId, on: app.db)
                 #expect(propose == nil)
             })
         }
     }
-    
-    @Test("不正なBase64形式の公開鍵でエラーになる")
-    func createProposeWithInvalidPublicKeyFormat() async throws {
+
+    @Test("同じIDのProposeを重複作成するとエラーになる")
+    func createDuplicateProposeReturnsConflict() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: "invalid-base64!!!", signature: "invalid-signature!!!")]
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+
+            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let creatorSig = try creator.sign(message)
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: creatorSig,
+                counterpartyPublicKey: counterparty.publicKeyBase64,
+                createdAt: createdAt
             )
-            
+
+            // 1回目は成功
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .created)
+            })
+
+            // 2回目は409 Conflict
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    @Test("不正なproposeIdの形式でエラーになる")
+    func createProposeWithInvalidIdFormat() async throws {
+        try await withApp { app in
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+            let input = CreateProposeInput(
+                proposeId: "not-a-uuid",
+                contentHash: "test-hash",
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: "dummy",
+                counterpartyPublicKey: counterparty.publicKeyBase64,
+                createdAt: "2026-01-01T00:00:00Z"
+            )
+
             try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
@@ -136,324 +196,416 @@ struct ProposeControllerTests {
             })
         }
     }
-    
-    // MARK: - Sign Tests
-    
-    @Test("正常な署名で既存のProposeに署名を追加できる")
-    func signExistingProposeWithValidSignature() async throws {
+
+    // MARK: - GET /v1/proposes/:id
+
+    @Test("既存のProposeをIDで取得できる")
+    func getOnePropose() async throws {
         try await withApp { app in
-            // まず最初のProposeを作成
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey1, signature1, _) = try generateTestSignature(message: payloadHash)
-            
-            let propose = Propose(id: proposeID, payloadHash: payloadHash)
-            try await propose.save(on: app.db)
-            
-            let firstSignature = Signature(proposeID: proposeID, publicKey: publicKey1, signatureData: signature1)
-            try await firstSignature.save(on: app.db)
-            
-            // 2人目の署名を追加
-            let (publicKey2, signature2, _) = try generateTestSignature(message: payloadHash)
-            
-            let updateInput = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [
-                    SignatureInput(publicKey: publicKey1, signature: signature1),
-                    SignatureInput(publicKey: publicKey2, signature: signature2)
-                ]
-            )
-            
-            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
-                try req.content.encode(updateInput)
-            }, afterResponse: { res async throws in
+            let (proposeId, contentHash, _, _, _) = try await createPropose(app: app)
+
+            try await app.testing().test(.GET, "v1/proposes/\(proposeId)", afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                
-                // 署名が2つになったか確認
-                let signatures = try await Signature.query(on: app.db)
-                    .filter(\.$propose.$id == proposeID)
-                    .all()
-                #expect(signatures.count == 2)
-                
-                let publicKeys = signatures.map { $0.publicKey }
-                #expect(publicKeys.contains(publicKey1))
-                #expect(publicKeys.contains(publicKey2))
+                let propose = try res.content.decode(Propose.self)
+                #expect(propose.id == proposeId)
+                #expect(propose.contentHash == contentHash)
+                #expect(propose.proposeStatus == .proposed)
             })
         }
     }
-    
-    @Test("不正な署名で既存のProposeに署名を追加するとエラーになる")
-    func signExistingProposeWithInvalidSignature() async throws {
+
+    @Test("存在しないIDで404になる")
+    func getOneNotFound() async throws {
         try await withApp { app in
-            // まず最初のProposeを作成
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey1, signature1, _) = try generateTestSignature(message: payloadHash)
-            
-            let propose = Propose(id: proposeID, payloadHash: payloadHash)
-            try await propose.save(on: app.db)
-            
-            let firstSignature = Signature(proposeID: proposeID, publicKey: publicKey1, signatureData: signature1)
-            try await firstSignature.save(on: app.db)
-            
-            // 不正な署名で追加を試みる
-            let (publicKey2, _, _) = try generateTestSignature(message: payloadHash)
-            let (_, wrongSignature, _) = try generateTestSignature(message: "wrong-message")
-            
-            let updateInput = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [
-                    SignatureInput(publicKey: publicKey1, signature: signature1),
-                    SignatureInput(publicKey: publicKey2, signature: wrongSignature)
-                ]
-            )
-            
-            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
-                try req.content.encode(updateInput)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .unauthorized)
-                
-                // 署名は1つのままであることを確認
-                let signatures = try await Signature.query(on: app.db)
-                    .filter(\.$propose.$id == proposeID)
-                    .all()
-                #expect(signatures.count == 1)
-                #expect(signatures.first?.publicKey == publicKey1)
-            })
-        }
-    }
-    
-    @Test("存在しないProposeに署名を追加するとエラーになる")
-    func signNonExistentPropose() async throws {
-        try await withApp { app in
-            let nonExistentID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
-            
-            let updateInput = ProposeInput(
-                id: nonExistentID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
-            )
-            
-            try await app.testing().test(.PUT, "v1/proposes/\(nonExistentID)", beforeRequest: { req in
-                try req.content.encode(updateInput)
-            }, afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/proposes/\(UUID())", afterResponse: { res async throws in
                 #expect(res.status == .notFound)
             })
         }
     }
-    
-    @Test("無効なUUID形式でアクセスするとエラーになる")
-    func signWithInvalidUUID() async throws {
+
+    // MARK: - GET /v1/proposes?publicKey=...&status=...
+
+    @Test("publicKeyでProposeを検索できる（creator）")
+    func listByCreatorPublicKey() async throws {
         try await withApp { app in
-            let payloadHash = "test-payload-hash"
-            let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
-            
-            let updateInput = ProposeInput(
-                id: UUID(), // 一応有効なUUIDを使用
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
-            )
-            
-            try await app.testing().test(.PUT, "v1/proposes/invalid-uuid", beforeRequest: { req in
-                try req.content.encode(updateInput)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .badRequest)
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+            try await createPropose(app: app, creatorKeyPair: creator, counterpartyKeyPair: counterparty)
+
+            let encodedKey = creator.publicKeyBase64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? creator.publicKeyBase64
+
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<Propose>.self)
+                #expect(page.items.count == 1)
             })
         }
     }
-    
-    @Test("同じ公開鍵で複数回署名できる")
-    func signMultipleTimesWithSamePublicKey() async throws {
+
+    @Test("statusフィルタで絞り込みができる")
+    func listFilterByStatus() async throws {
         try await withApp { app in
-            // 最初のProposeを作成
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey, signature, privateKey) = try generateTestSignature(message: payloadHash)
-            
-            let propose = Propose(id: proposeID, payloadHash: payloadHash)
-            try await propose.save(on: app.db)
-            
-            let firstSignature = Signature(proposeID: proposeID, publicKey: publicKey, signatureData: signature)
-            try await firstSignature.save(on: app.db)
-            
-            // 同じ鍵で再度署名（タイムスタンプが違うだけ）
-            let messageData = Data(payloadHash.utf8)
-            let signature2 = try privateKey.signature(for: messageData)
-            let signatureBase64_2 = signature2.derRepresentation.base64EncodedString()
-            
-            let updateInput = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [
-                    SignatureInput(publicKey: publicKey, signature: signature),
-                    SignatureInput(publicKey: publicKey, signature: signatureBase64_2)
-                ]
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+            let (proposeId, contentHash, createdAt, _, counterpartyKP) = try await createPropose(
+                app: app,
+                creatorKeyPair: creator,
+                counterpartyKeyPair: counterparty
             )
-            
-            try await app.testing().test(.PUT, "v1/proposes/\(proposeID)", beforeRequest: { req in
-                try req.content.encode(updateInput)
+
+            // proposed → signed へ遷移させる
+            let signMessage = proposeId.uuidString + contentHash + counterpartyKP.publicKeyBase64 + createdAt
+            let counterpartySig = try counterpartyKP.sign(signMessage)
+            let signInput = SignInput(counterpartySignature: counterpartySig, createdAt: createdAt)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(signInput)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                
-                // 署名が2つになったことを確認
-                let signatures = try await Signature.query(on: app.db)
-                    .filter(\.$propose.$id == proposeID)
-                    .all()
-                #expect(signatures.count == 2)
-                
-                // どちらも同じ公開鍵
-                #expect(signatures.allSatisfy { $0.publicKey == publicKey })
+            })
+
+            let encodedKey = creator.publicKeyBase64.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? creator.publicKeyBase64
+
+            // proposed フィルタ → 0件
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<Propose>.self)
+                #expect(page.items.count == 0)
+            })
+
+            // signed フィルタ → 1件
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=signed", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<Propose>.self)
+                #expect(page.items.count == 1)
+            })
+
+            // proposed,signed フィルタ → 1件
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&status=proposed,signed", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<Propose>.self)
+                #expect(page.items.count == 1)
             })
         }
     }
-    
-    // MARK: - Input Size Validation Tests
-    
-    @Test("payloadHashが256文字を超えるとエラーになる")
-    func payloadHashTooLong() async throws {
+
+    // MARK: - PATCH /v1/proposes/:id/sign
+
+    @Test("counterpartyが署名するとsigned状態になる")
+    func signProposeSuccess() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let longPayloadHash = String(repeating: "a", count: 257) // 257文字
-            let (publicKey, signature, _) = try generateTestSignature(message: "test")
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: longPayloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+
+            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let sig = try counterparty.sign(message)
+            let input = SignInput(counterpartySignature: sig, createdAt: createdAt)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .signed)
+                #expect(propose?.counterpartySignature == sig)
+            })
+        }
+    }
+
+    @Test("不正な署名でsignするとエラーになる")
+    func signProposeWithInvalidSignature() async throws {
+        try await withApp { app in
+            let (proposeId, _, createdAt, _, counterparty) = try await createPropose(app: app)
+
+            let wrongSig = try counterparty.sign("wrong-message")
+            let input = SignInput(counterpartySignature: wrongSig, createdAt: createdAt)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .unauthorized)
+
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .proposed)
+            })
+        }
+    }
+
+    @Test("createdAtが一致しないとエラーになる")
+    func signProposeWithWrongCreatedAt() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
+
+            let wrongCreatedAt = "2099-01-01T00:00:00Z"
+            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + wrongCreatedAt
+            let sig = try counterparty.sign(message)
+            let input = SignInput(counterpartySignature: sig, createdAt: wrongCreatedAt)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .badRequest)
             })
         }
     }
-    
-    @Test("署名が1000個を超えるとエラーになる")
-    func tooManySignatures() async throws {
+
+    @Test("proposed以外の状態でsignするとエラーになる")
+    func signNonProposedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            
-            // 1001個の署名を生成
-            var signatures: [SignatureInput] = []
-            for _ in 0...1000 {
-                let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
-                signatures.append(SignatureInput(publicKey: publicKey, signature: signature))
-            }
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: signatures
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+
+            // 1回目のsign（proposed → signed）
+            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let sig = try counterparty.sign(message)
+            let input = SignInput(counterpartySignature: sig, createdAt: createdAt)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .badRequest)
+                #expect(res.status == .ok)
+            })
+
+            // 2回目のsign → conflict
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .conflict)
             })
         }
     }
-    
-    @Test("公開鍵が500文字を超えるとエラーになる")
-    func publicKeyTooLong() async throws {
+
+    // MARK: - DELETE /v1/proposes/:id (dissolve)
+
+    @Test("creatorがdissolveできる")
+    func dissolveByCreator() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let longPublicKey = String(repeating: "a", count: 501) // 501文字
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: longPublicKey, signature: "test")]
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-02T00:00:00Z"
+            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let sig = try creator.sign(message)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .badRequest)
+                #expect(res.status == .ok)
+
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .dissolved)
             })
         }
     }
-    
-    @Test("署名データが500文字を超えるとエラーになる")
-    func signatureTooLong() async throws {
+
+    @Test("counterpartyがdissolveできる")
+    func dissolveByCounterparty() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            let (publicKey, _, _) = try generateTestSignature(message: payloadHash)
-            let longSignature = String(repeating: "a", count: 501) // 501文字
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: longSignature)]
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-02T00:00:00Z"
+            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let sig = try counterparty.sign(message)
+            let input = TransitionInput(publicKey: counterparty.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .badRequest)
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .dissolved)
             })
         }
     }
-    
-    @Test("256文字のpayloadHashは許可される")
-    func payloadHashMaxLength() async throws {
+
+    @Test("第三者がdissolveしようとすると403になる")
+    func dissolveByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let maxPayloadHash = String(repeating: "a", count: 256) // ちょうど256文字
-            let (publicKey, signature, _) = try generateTestSignature(message: maxPayloadHash)
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: maxPayloadHash,
-                signatures: [SignatureInput(publicKey: publicKey, signature: signature)]
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, _, _, _) = try await createPropose(app: app)
+
+            let thirdParty = KeyPair()
+            let timestamp = "2026-01-02T00:00:00Z"
+            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let sig = try thirdParty.sign(message)
+            let input = TransitionInput(publicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .created)
+                #expect(res.status == .forbidden)
             })
         }
     }
-    
-    @Test("1000個の署名は許可される")
-    func exactlyThousandSignatures() async throws {
+
+    @Test("signed状態のProposeはdissolveできない")
+    func dissolveSignedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let proposeID = UUID()
-            let payloadHash = "test-payload-hash"
-            
-            // ちょうど1000個の署名を生成
-            var signatures: [SignatureInput] = []
-            for _ in 0..<1000 {
-                let (publicKey, signature, _) = try generateTestSignature(message: payloadHash)
-                signatures.append(SignatureInput(publicKey: publicKey, signature: signature))
-            }
-            
-            let input = ProposeInput(
-                id: proposeID,
-                payloadHash: payloadHash,
-                signatures: signatures
-            )
-            
-            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            // dissolve試行 → conflict
+            let timestamp = "2026-01-02T00:00:00Z"
+            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let dissolveSig = try creator.sign(dissolveMessage)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: dissolveSig, timestamp: timestamp)
+
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .created)
-                
-                // 全ての署名が保存されたか確認
-                let savedSignatures = try await Signature.query(on: app.db)
-                    .filter(\.$propose.$id == proposeID)
-                    .all()
-                #expect(savedSignatures.count == 1000)
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    // MARK: - PATCH /v1/proposes/:id/honor
+
+    @Test("両者がhonor署名するとhonored状態になる")
+    func honorBothPartiesSuccess() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            let timestamp = "2026-01-03T00:00:00Z"
+            let honorMessage = "honored." + proposeId.uuidString + contentHash + timestamp
+
+            // creatorがhonor
+            let creatorHonorSig = try creator.sign(honorMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorHonorSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                // まだsigned
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .signed)
+            })
+
+            // counterpartyがhonor → honored
+            let counterpartyHonorSig = try counterparty.sign(honorMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyHonorSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .honored)
+            })
+        }
+    }
+
+    @Test("proposed状態のProposeはhonorできない")
+    func honorProposedProposeReturnsConflict() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-03T00:00:00Z"
+            let message = "honored." + proposeId.uuidString + contentHash + timestamp
+            let sig = try creator.sign(message)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    // MARK: - PATCH /v1/proposes/:id/part
+
+    @Test("両者がpart署名するとparted状態になる")
+    func partBothPartiesSuccess() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            let timestamp = "2026-01-03T00:00:00Z"
+            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+
+            // creatorがpart
+            let creatorPartSig = try creator.sign(partMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .signed)
+            })
+
+            // counterpartyがpart → parted
+            let counterpartyPartSig = try counterparty.sign(partMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyPartSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .parted)
+            })
+        }
+    }
+
+    @Test("proposed状態のProposeはpartできない")
+    func partProposedProposeReturnsConflict() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-03T00:00:00Z"
+            let message = "parted." + proposeId.uuidString + contentHash + timestamp
+            let sig = try creator.sign(message)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .conflict)
+            })
+        }
+    }
+
+    @Test("第三者がpartしようとすると403になる")
+    func partByThirdPartyReturnsForbidden() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(counterpartySignature: counterpartySig, createdAt: createdAt))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            let thirdParty = KeyPair()
+            let timestamp = "2026-01-03T00:00:00Z"
+            let message = "parted." + proposeId.uuidString + contentHash + timestamp
+            let sig = try thirdParty.sign(message)
+            let input = TransitionInput(publicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .forbidden)
             })
         }
     }

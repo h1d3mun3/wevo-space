@@ -26,7 +26,7 @@ struct RateLimitMiddlewareTests {
             app.databases.use(.sqlite(.memory), as: .sqlite)
             
             // マイグレーションを登録
-            app.migrations.add(CreateWevoProposeTables())
+            app.migrations.add(CreateProposesTable())
             
             // マイグレーション実行
             try await app.autoMigrate()

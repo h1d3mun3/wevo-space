@@ -1,14 +1,16 @@
-//
-//  Untitled.swift
-//  WevoSpace
-//
-//  Created by hidemune on 3/5/26.
-//
-
 import Vapor
 
-// 既存の提案に署名（Sign/Commit）を足す時の形
+// PATCH /v1/proposes/:id/sign
 struct SignInput: Content {
+    let counterpartySignature: String
+    let createdAt: String
+}
+
+// DELETE /v1/proposes/:id (dissolved)
+// PATCH  /v1/proposes/:id/honor
+// PATCH  /v1/proposes/:id/part
+struct TransitionInput: Content {
     let publicKey: String
     let signature: String
+    let timestamp: String
 }
