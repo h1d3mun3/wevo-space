@@ -324,9 +324,10 @@ struct ProposeControllerTests {
             )
 
             // Transition from proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterpartyKP.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterpartyKP.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterpartyKP.sign(signMessage)
-            let signInput = SignInput(signerPublicKey: counterpartyKP.publicKeyBase64, signature: counterpartySig, createdAt: createdAt)
+            let signInput = SignInput(signerPublicKey: counterpartyKP.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(signInput)
             }, afterResponse: { res async throws in
@@ -365,10 +366,11 @@ struct ProposeControllerTests {
         try await withApp { app in
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
-            // sign message: proposeId + contentHash + signerPublicKey + createdAt
-            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            // sign message: "signed." + proposeId + contentHash + signerPublicKey + timestamp
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let message = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let sig = try counterparty.sign(message)
-            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, timestamp: signTimestamp)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -382,6 +384,7 @@ struct ProposeControllerTests {
                     .filter(\.$publicKey == counterparty.publicKeyBase64)
                     .first()
                 #expect(cp?.signSignature == sig)
+                #expect(cp?.signTimestamp == signTimestamp)
             })
         }
     }
@@ -391,8 +394,9 @@ struct ProposeControllerTests {
         try await withApp { app in
             let (proposeId, _, createdAt, _, counterparty) = try await createPropose(app: app)
 
+            let signTimestamp = "2026-01-02T00:00:00Z"
             let wrongSig = try counterparty.sign("wrong-message")
-            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: wrongSig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: wrongSig, timestamp: signTimestamp)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -405,20 +409,21 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("Mismatched createdAt returns an error")
-    func signProposeWithWrongCreatedAt() async throws {
+    @Test("Signing with old message format (without 'signed.' prefix) returns unauthorized")
+    func signProposeWithOldMessageFormatReturnsUnauthorized() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
-            let wrongCreatedAt = "2099-01-01T00:00:00Z"
-            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + wrongCreatedAt
-            let sig = try counterparty.sign(message)
-            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: wrongCreatedAt)
+            // Sign with old format (no "signed." prefix) — should be rejected
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let oldMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
+            let sig = try counterparty.sign(oldMessage)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, timestamp: signTimestamp)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .badRequest)
+                #expect(res.status == .unauthorized)
             })
         }
     }
@@ -427,7 +432,7 @@ struct ProposeControllerTests {
     func signNonExistentProposeReturnsNotFound() async throws {
         try await withApp { app in
             let proposeId = UUID()
-            let input = SignInput(signerPublicKey: "dummy-key", signature: "dummy-sig", createdAt: "2026-01-01T00:00:00Z")
+            let input = SignInput(signerPublicKey: "dummy-key", signature: "dummy-sig", timestamp: "2026-01-01T00:00:00Z")
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -443,9 +448,10 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, _, _) = try await createPropose(app: app)
 
             let thirdParty = KeyPair()
-            let message = proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let message = "signed." + proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + signTimestamp
             let sig = try thirdParty.sign(message)
-            let input = SignInput(signerPublicKey: thirdParty.publicKeyBase64, signature: sig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: signTimestamp)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -461,9 +467,10 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
             // First sign (proposed → signed)
-            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let message = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let sig = try counterparty.sign(message)
-            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt)
+            let input = SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, timestamp: signTimestamp)
 
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
@@ -586,10 +593,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -616,10 +624,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -656,10 +665,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -684,10 +694,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -748,10 +759,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -777,10 +789,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -806,10 +819,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -868,10 +882,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -905,10 +920,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
@@ -935,10 +951,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // signed → honored
@@ -970,10 +987,11 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let counterpartySig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // signed → parted
@@ -986,7 +1004,7 @@ struct ProposeControllerTests {
             // parted → sign attempt → conflict
             let newSig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
             })
@@ -1025,10 +1043,11 @@ struct ProposeControllerTests {
             })
 
             // counterparty1 signs → still proposed (counterparty2 has not signed)
-            let sign1Message = proposeId.uuidString + contentHash + counterparty1.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let sign1Message = "signed." + proposeId.uuidString + contentHash + counterparty1.publicKeyBase64 + signTimestamp
             let sig1 = try counterparty1.sign(sign1Message)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty1.publicKeyBase64, signature: sig1, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty1.publicKeyBase64, signature: sig1, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let propose = try await Propose.find(proposeId, on: app.db)
@@ -1036,10 +1055,10 @@ struct ProposeControllerTests {
             })
 
             // counterparty2 signs → transitions to signed
-            let sign2Message = proposeId.uuidString + contentHash + counterparty2.publicKeyBase64 + createdAt
+            let sign2Message = "signed." + proposeId.uuidString + contentHash + counterparty2.publicKeyBase64 + signTimestamp
             let sig2 = try counterparty2.sign(sign2Message)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty2.publicKeyBase64, signature: sig2, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty2.publicKeyBase64, signature: sig2, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let propose = try await Propose.find(proposeId, on: app.db)
@@ -1062,10 +1081,11 @@ struct ProposeControllerTests {
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // dissolved → sign attempt → conflict
-            let signMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
             let sig = try counterparty.sign(signMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, createdAt: createdAt))
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: sig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
             })
