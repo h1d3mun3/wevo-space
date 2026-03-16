@@ -5,7 +5,7 @@ import Vapor
 struct SignInput: Content {
     let signerPublicKey: String
     let signature: String
-    let createdAt: String
+    let timestamp: String
 }
 
 // DELETE /v1/proposes/:id (dissolved)
