@@ -27,6 +27,16 @@ final class ProposeCounterparty: Model, Content, @unchecked Sendable {
     @OptionalField(key: "part_signature")
     var partSignature: String?
 
+    // Timestamps for each transition (ISO8601, client-generated and signed)
+    @OptionalField(key: "sign_timestamp")
+    var signTimestamp: String?
+
+    @OptionalField(key: "honor_timestamp")
+    var honorTimestamp: String?
+
+    @OptionalField(key: "part_timestamp")
+    var partTimestamp: String?
+
     init() { }
 
     init(proposeID: UUID, publicKey: String) {

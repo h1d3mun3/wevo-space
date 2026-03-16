@@ -33,6 +33,16 @@ final class Propose: Model, @unchecked Sendable {
     @OptionalField(key: "part_creator_signature")
     var partCreatorSignature: String?
 
+    // Timestamps for each state transition (ISO8601, client-generated and signed)
+    @OptionalField(key: "dissolved_at")
+    var dissolvedAt: String?
+
+    @OptionalField(key: "honor_creator_timestamp")
+    var honorCreatorTimestamp: String?
+
+    @OptionalField(key: "part_creator_timestamp")
+    var partCreatorTimestamp: String?
+
     @Field(key: "status")
     var status: String  // Stores the rawValue of ProposeStatus
 
