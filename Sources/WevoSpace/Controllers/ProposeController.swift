@@ -11,7 +11,10 @@ struct ProposeResponse: Content {
     let creatorSignature: String
     let counterparties: [CounterpartyInfo]
     let honorCreatorSignature: String?
+    let honorCreatorTimestamp: String?
     let partCreatorSignature: String?
+    let partCreatorTimestamp: String?
+    let dissolvedAt: String?
     let status: String
     let createdAt: String
     let updatedAt: Date?
@@ -19,8 +22,11 @@ struct ProposeResponse: Content {
     struct CounterpartyInfo: Content {
         let publicKey: String
         let signSignature: String?
+        let signTimestamp: String?
         let honorSignature: String?
+        let honorTimestamp: String?
         let partSignature: String?
+        let partTimestamp: String?
     }
 
     init(from propose: Propose) throws {
@@ -32,12 +38,18 @@ struct ProposeResponse: Content {
             CounterpartyInfo(
                 publicKey: $0.publicKey,
                 signSignature: $0.signSignature,
+                signTimestamp: $0.signTimestamp,
                 honorSignature: $0.honorSignature,
-                partSignature: $0.partSignature
+                honorTimestamp: $0.honorTimestamp,
+                partSignature: $0.partSignature,
+                partTimestamp: $0.partTimestamp
             )
         }
         self.honorCreatorSignature = propose.honorCreatorSignature
+        self.honorCreatorTimestamp = propose.honorCreatorTimestamp
         self.partCreatorSignature = propose.partCreatorSignature
+        self.partCreatorTimestamp = propose.partCreatorTimestamp
+        self.dissolvedAt = propose.dissolvedAt
         self.status = propose.status
         self.createdAt = propose.createdAt
         self.updatedAt = propose.updatedAt
@@ -177,15 +189,12 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "Not a counterparty of this Propose")
         }
 
-        guard input.createdAt == propose.createdAt else {
-            throw Abort(.badRequest, reason: "createdAt does not match the Propose value")
-        }
-
-        // Signature verification: proposeId + contentHash + signerPublicKey + createdAt
-        let message = propose.id!.uuidString + propose.contentHash + input.signerPublicKey + propose.createdAt
+        // Signature verification: "signed." + proposeId + contentHash + signerPublicKey + timestamp
+        let message = "signed." + propose.id!.uuidString + propose.contentHash + input.signerPublicKey + input.timestamp
         try verifySignature(publicKey: input.signerPublicKey, signature: input.signature, message: message)
 
         counterparty.signSignature = input.signature
+        counterparty.signTimestamp = input.timestamp
         try await counterparty.save(on: req.db)
 
         // Auto-transition to signed when all counterparties have signed
@@ -228,6 +237,7 @@ struct ProposeController: RouteCollection {
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
         propose.proposeStatus = .dissolved
+        propose.dissolvedAt = input.timestamp
         try await propose.save(on: req.db)
 
         return .ok
@@ -266,10 +276,12 @@ struct ProposeController: RouteCollection {
         let creatorHonored: Bool
         if isCreator {
             propose.honorCreatorSignature = input.signature
+            propose.honorCreatorTimestamp = input.timestamp
             try await propose.save(on: req.db)
             creatorHonored = true
         } else {
             counterparty!.honorSignature = input.signature
+            counterparty!.honorTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
             creatorHonored = propose.honorCreatorSignature != nil
         }
@@ -315,8 +327,10 @@ struct ProposeController: RouteCollection {
 
         if isCreator {
             propose.partCreatorSignature = input.signature
+            propose.partCreatorTimestamp = input.timestamp
         } else {
             counterparty!.partSignature = input.signature
+            counterparty!.partTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
         }
 
