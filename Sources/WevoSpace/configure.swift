@@ -55,7 +55,9 @@ private func configurePostgreSQL(_ app: Application) throws {
     let hostname = Environment.get("DATABASE_HOST") ?? "localhost"
     let port = Environment.get("DATABASE_PORT").flatMap(Int.init) ?? 5432
     let username = Environment.get("DATABASE_USERNAME") ?? "vapor"
-    let password = Environment.get("DATABASE_PASSWORD") ?? ""
+    guard let password = Environment.get("DATABASE_PASSWORD") else {
+        throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required in production")
+    }
     let database = Environment.get("DATABASE_NAME") ?? "wevospace"
 
     let postgresConfig = PostgresConfiguration(
