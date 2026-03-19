@@ -18,7 +18,7 @@ A Propose is a mechanism for recording and managing multi-party agreements with 
 |---|---|---|
 | `id` | UUID | Propose ID (client-generated) |
 | `contentHash` | string | Hash of the content |
-| `creatorPublicKey` | string | Creator's public key (Base64 / X.963) |
+| `creatorPublicKey` | string | Creator's public key (JWK JSON string) |
 | `creatorSignature` | string | Creator's signature (Base64 / DER) |
 | `counterparties` | CounterpartyInfo[] | List of counterparties and their signatures |
 | `honorCreatorSignature` | string? | Creator's honor signature |
@@ -31,7 +31,7 @@ A Propose is a mechanism for recording and managing multi-party agreements with 
 
 | Field | Type | Description |
 |---|---|---|
-| `publicKey` | string | Counterparty's public key (Base64 / X.963) |
+| `publicKey` | string | Counterparty's public key (JWK JSON string) |
 | `signSignature` | string? | Signature for `/sign` (set after signing) |
 | `honorSignature` | string? | Signature for `/honor` |
 | `partSignature` | string? | Signature for `/part` |
@@ -62,8 +62,16 @@ dissolved                               parted
 ## Signature Specification
 
 - Key algorithm: **P-256 ECDSA**
-- Public key format: Base64-encoded **X.963 format** (65 bytes)
+- Public key format: **JWK (JSON Web Key)** — a JSON string with `crv`, `kty`, `x`, `y` fields (x and y are Base64URL-encoded 32-byte coordinates)
 - Signature format: Base64-encoded **DER format**
+
+**Public key example:**
+```json
+{"crv":"P-256","kty":"EC","x":"IrH3k5a8Q2mXvP1nQ7rAbCdEfGhIjKlMnOpQrSt","y":"UvWxYzAaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"}
+```
+
+> **Note for GET requests**: When passing a public key as a URL query parameter, percent-encode the full JWK string (e.g. using `encodeURIComponent`).
+
 
 ### Message to Sign
 
@@ -105,7 +113,7 @@ Returns proposes where the specified public key is either the creator or one of 
 
 | Parameter | Required | Description |
 |---|---|---|
-| `publicKey` | ✅ | Public key to search by (Base64 / X.963) |
+| `publicKey` | ✅ | Public key to search by (JWK, percent-encoded) |
 | `status` | ✗ | Filter by status (comma-separated for multiple) |
 | `page` | ✗ | Page number (default: 1) |
 | `per` | ✗ | Items per page (default: 10) |
@@ -113,7 +121,7 @@ Returns proposes where the specified public key is either the creator or one of 
 ### Request Example
 
 ```
-GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
+GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%22x%22%3A%22IrH3...%22%2C%22y%22%3A%22UvWx...%22%7D&status=proposed,signed
 ```
 
 ### Response (200 OK)
@@ -124,11 +132,11 @@ GET /v1/proposes?publicKey=BHqG...&status=proposed,signed
     {
       "id": "550E8400-E29B-41D4-A716-446655440000",
       "contentHash": "abc123def456",
-      "creatorPublicKey": "BHqG...",
+      "creatorPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
       "creatorSignature": "MEUC...",
       "counterparties": [
         {
-          "publicKey": "BIrH...",
+          "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
           "signSignature": null,
           "honorSignature": null,
           "partSignature": null
@@ -167,9 +175,12 @@ The creator creates a new Propose. Sign `proposeId + contentHash + counterpartyP
 {
   "proposeId": "550E8400-E29B-41D4-A716-446655440000",
   "contentHash": "abc123def456",
-  "creatorPublicKey": "BHqG...",
+  "creatorPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "creatorSignature": "MEUC...",
-  "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
+  "counterpartyPublicKeys": [
+    "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
+    "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IjKl...\",\"y\":\"MnOp...\"}"
+  ],
   "createdAt": "2026-01-01T00:00:00Z"
 }
 ```
@@ -224,7 +235,7 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 
 ```json
 {
-  "signerPublicKey": "BIrH...",
+  "signerPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
   "signature": "MEUC...",
   "createdAt": "2026-01-01T00:00:00Z"
 }
@@ -257,7 +268,7 @@ The creator or any counterparty signs `"dissolved." + proposeId + contentHash + 
 
 ```json
 {
-  "publicKey": "BHqG...",
+  "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "signature": "MEUC...",
   "timestamp": "2026-01-02T00:00:00Z"
 }
@@ -353,52 +364,62 @@ Response when limit is exceeded: **429 Too Many Requests**
 ### Create a Propose (2 counterparties)
 
 ```bash
+CREATOR_JWK='{"crv":"P-256","kty":"EC","x":"IrH3...","y":"UvWx..."}'
+COUNTERPARTY1_JWK='{"crv":"P-256","kty":"EC","x":"AbCd...","y":"EfGh..."}'
+COUNTERPARTY2_JWK='{"crv":"P-256","kty":"EC","x":"IjKl...","y":"MnOp..."}'
+
 curl -X POST http://localhost:8080/v1/proposes \
   -H "Content-Type: application/json" \
-  -d '{
-    "proposeId": "550E8400-E29B-41D4-A716-446655440000",
-    "contentHash": "abc123def456",
-    "creatorPublicKey": "BHqG...",
-    "creatorSignature": "MEUC...",
-    "counterpartyPublicKeys": ["BIrH...", "BJsI..."],
-    "createdAt": "2026-01-01T00:00:00Z"
-  }'
+  -d "{
+    \"proposeId\": \"550E8400-E29B-41D4-A716-446655440000\",
+    \"contentHash\": \"abc123def456\",
+    \"creatorPublicKey\": $CREATOR_JWK,
+    \"creatorSignature\": \"MEUC...\",
+    \"counterpartyPublicKeys\": [$COUNTERPARTY1_JWK, $COUNTERPARTY2_JWK],
+    \"createdAt\": \"2026-01-01T00:00:00Z\"
+  }"
 ```
 
 ### Sign (counterparty)
 
 ```bash
+COUNTERPARTY_JWK='{"crv":"P-256","kty":"EC","x":"AbCd...","y":"EfGh..."}'
+
 curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/sign \
   -H "Content-Type: application/json" \
-  -d '{
-    "signerPublicKey": "BIrH...",
-    "signature": "MEUC...",
-    "createdAt": "2026-01-01T00:00:00Z"
-  }'
+  -d "{
+    \"signerPublicKey\": $COUNTERPARTY_JWK,
+    \"signature\": \"MEUC...\",
+    \"createdAt\": \"2026-01-01T00:00:00Z\"
+  }"
 ```
 
 ### Dissolve
 
 ```bash
+CREATOR_JWK='{"crv":"P-256","kty":"EC","x":"IrH3...","y":"UvWx..."}'
+
 curl -X DELETE http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000 \
   -H "Content-Type: application/json" \
-  -d '{
-    "publicKey": "BHqG...",
-    "signature": "MEUC...",
-    "timestamp": "2026-01-02T00:00:00Z"
-  }'
+  -d "{
+    \"publicKey\": $CREATOR_JWK,
+    \"signature\": \"MEUC...\",
+    \"timestamp\": \"2026-01-02T00:00:00Z\"
+  }"
 ```
 
 ### Submit Honor Signature
 
 ```bash
+CREATOR_JWK='{"crv":"P-256","kty":"EC","x":"IrH3...","y":"UvWx..."}'
+
 curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-446655440000/honor \
   -H "Content-Type: application/json" \
-  -d '{
-    "publicKey": "BHqG...",
-    "signature": "MEUC...",
-    "timestamp": "2026-01-03T00:00:00Z"
-  }'
+  -d "{
+    \"publicKey\": $CREATOR_JWK,
+    \"signature\": \"MEUC...\",
+    \"timestamp\": \"2026-01-03T00:00:00Z\"
+  }"
 ```
 
 ---
@@ -406,4 +427,4 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
 ## Version
 
 API Version: 1.0.0
-Last updated: 2026-03-15
+Last updated: 2026-03-19
