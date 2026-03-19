@@ -4,6 +4,26 @@ import Testing
 import Fluent
 import FluentSQLiteDriver
 import Crypto
+import Foundation
+
+// MARK: - JWK Helper (テスト用)
+private extension P256.Signing.PublicKey {
+    var jwkString: String {
+        let raw = rawRepresentation
+        let x = raw.prefix(32).base64URLEncodedString()
+        let y = raw.suffix(32).base64URLEncodedString()
+        return #"{"crv":"P-256","kty":"EC","x":"\#(x)","y":"\#(y)"}"#
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
 
 @Suite("ProposeController Tests", .serialized)
 struct ProposeControllerTests {
@@ -29,11 +49,11 @@ struct ProposeControllerTests {
 
     private struct KeyPair {
         let privateKey: P256.Signing.PrivateKey
-        let publicKeyBase64: String
+        let publicKeyBase64: String // JWK format
 
         init() {
             privateKey = P256.Signing.PrivateKey()
-            publicKeyBase64 = privateKey.publicKey.x963Representation.base64EncodedString()
+            publicKeyBase64 = privateKey.publicKey.jwkString
         }
 
         func sign(_ message: String) throws -> String {
@@ -43,11 +63,9 @@ struct ProposeControllerTests {
         }
     }
 
-    /// Encodes a Base64 public key for use as a URL query parameter (encodes + as %2B)
+    /// JWK公開鍵をURLクエリパラメータ用にパーセントエンコードする
     private func encodePublicKey(_ key: String) -> String {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "+")
-        return key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+        key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
     }
 
     /// Creates a Propose for testing and returns its key data

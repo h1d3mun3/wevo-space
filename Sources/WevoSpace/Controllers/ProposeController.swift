@@ -343,10 +343,17 @@ struct ProposeController: RouteCollection {
 
     // MARK: - Signature Verification Helper
 
-    private func verifySignature(publicKey: String, signature: String, message: String) throws {
-        guard let publicKeyData = Data(base64Encoded: publicKey) else {
-            throw Abort(.badRequest, reason: "Failed to Base64-decode the public key")
+    private func verifySignature(publicKey jwkString: String, signature: String, message: String) throws {
+        guard let jsonData = jwkString.data(using: .utf8),
+              let jwk = try? JSONDecoder().decode(JWKPublicKey.self, from: jsonData),
+              let xData = Data(base64URLEncoded: jwk.x),
+              let yData = Data(base64URLEncoded: jwk.y) else {
+            throw Abort(.badRequest, reason: "Invalid JWK public key format")
         }
+
+        var x963 = Data([0x04])
+        x963.append(contentsOf: xData)
+        x963.append(contentsOf: yData)
 
         guard let signatureData = Data(base64Encoded: signature) else {
             throw Abort(.badRequest, reason: "Failed to Base64-decode the signature")
@@ -358,7 +365,7 @@ struct ProposeController: RouteCollection {
 
         let publicKeyObj: P256.Signing.PublicKey
         do {
-            publicKeyObj = try P256.Signing.PublicKey(x963Representation: publicKeyData)
+            publicKeyObj = try P256.Signing.PublicKey(x963Representation: x963)
         } catch {
             throw Abort(.badRequest, reason: "Invalid public key format")
         }
@@ -373,5 +380,24 @@ struct ProposeController: RouteCollection {
         guard publicKeyObj.isValidSignature(ecdsaSignature, for: messageData) else {
             throw Abort(.unauthorized, reason: "Signature verification failed")
         }
+    }
+}
+
+// MARK: - JWK Helpers
+
+private struct JWKPublicKey: Decodable {
+    let x: String
+    let y: String
+}
+
+private extension Data {
+    /// Base64URL デコード ('-' → '+', '_' → '/', パディング補完)
+    init?(base64URLEncoded string: String) {
+        var s = string
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = s.count % 4
+        if remainder > 0 { s += String(repeating: "=", count: 4 - remainder) }
+        self.init(base64Encoded: s)
     }
 }

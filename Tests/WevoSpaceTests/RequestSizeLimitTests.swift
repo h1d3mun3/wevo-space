@@ -4,6 +4,25 @@ import Testing
 import Fluent
 import FluentSQLiteDriver
 import Crypto
+import Foundation
+
+private extension P256.Signing.PublicKey {
+    var jwkString: String {
+        let raw = rawRepresentation
+        let x = raw.prefix(32).base64URLEncodedString()
+        let y = raw.suffix(32).base64URLEncodedString()
+        return #"{"crv":"P-256","kty":"EC","x":"\#(x)","y":"\#(y)"}"#
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
 
 @Suite("Request Size Limit Tests", .serialized)
 struct RequestSizeLimitTests {
@@ -39,7 +58,7 @@ struct RequestSizeLimitTests {
             pubKey = key
         } else {
             let pk = P256.Signing.PrivateKey()
-            pubKey = pk.publicKey.x963Representation.base64EncodedString()
+            pubKey = pk.publicKey.jwkString
         }
         return CreateProposeInput(
             proposeId: proposeId.uuidString,
@@ -59,8 +78,8 @@ struct RequestSizeLimitTests {
             let proposeId = UUID()
             let contentHash = "test-hash"
             let createdAt = "2026-01-01T00:00:00Z"
-            let counterpartyPubKey = counterpartyKey.publicKey.x963Representation.base64EncodedString()
-            let creatorPubKey = privateKey.publicKey.x963Representation.base64EncodedString()
+            let counterpartyPubKey = counterpartyKey.publicKey.jwkString
+            let creatorPubKey = privateKey.publicKey.jwkString
 
             let message = proposeId.uuidString + contentHash + counterpartyPubKey + createdAt
             let sig = try privateKey.signature(for: Data(message.utf8))
