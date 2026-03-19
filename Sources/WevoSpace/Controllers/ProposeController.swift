@@ -391,7 +391,7 @@ private struct JWKPublicKey: Decodable {
 }
 
 private extension Data {
-    /// Base64URL デコード ('-' → '+', '_' → '/', パディング補完)
+    /// Base64URL decoding ('-' → '+', '_' → '/', restores padding)
     init?(base64URLEncoded string: String) {
         var s = string
             .replacingOccurrences(of: "-", with: "+")
