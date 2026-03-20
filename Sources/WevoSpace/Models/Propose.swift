@@ -43,6 +43,10 @@ final class Propose: Model, @unchecked Sendable {
     @OptionalField(key: "part_creator_timestamp")
     var partCreatorTimestamp: String?
 
+    /// Signature scheme version. v1 embeds signerPublicKey in every signed message for non-repudiation.
+    @Field(key: "signature_version")
+    var signatureVersion: Int
+
     @Field(key: "status")
     var status: String  // Stores the rawValue of ProposeStatus
 
@@ -64,7 +68,8 @@ final class Propose: Model, @unchecked Sendable {
         contentHash: String,
         creatorPublicKey: String,
         creatorSignature: String,
-        createdAt: String
+        createdAt: String,
+        signatureVersion: Int = 1
     ) {
         self.id = id
         self.contentHash = contentHash
@@ -72,6 +77,7 @@ final class Propose: Model, @unchecked Sendable {
         self.creatorSignature = creatorSignature
         self.status = ProposeStatus.proposed.rawValue
         self.createdAt = createdAt
+        self.signatureVersion = signatureVersion
         self.updatedAt = Date()
     }
 
