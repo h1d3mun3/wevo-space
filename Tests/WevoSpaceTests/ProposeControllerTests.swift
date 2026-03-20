@@ -203,6 +203,31 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("Creating a Propose with an invalid JWK public key returns bad request")
+    func createProposeWithInvalidJWKReturns400() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let counterparty = KeyPair()
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: "not-a-valid-jwk",
+                creatorSignature: "someSig",
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
+                createdAt: createdAt
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
     @Test("Duplicate Propose creation with the same ID returns an error")
     func createDuplicateProposeReturnsConflict() async throws {
         try await withApp { app in
@@ -408,6 +433,38 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
                 let page = try res.content.decode(Page<ProposeResponse>.self)
                 #expect(page.items.count == 1)
+            })
+        }
+    }
+
+    @Test("List endpoint returns correct pagination metadata")
+    func listReturnsPaginationMetadata() async throws {
+        try await withApp { app in
+            let creator = KeyPair()
+            let encodedKey = encodePublicKey(creator.publicKeyBase64)
+
+            // Create 3 proposes by the same creator
+            for _ in 1...3 {
+                _ = try await createPropose(app: app, creatorKeyPair: creator)
+            }
+
+            // Request page 1 with per=2
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&page=1&per=2", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
+                #expect(page.items.count == 2)
+                #expect(page.metadata.total == 3)
+                #expect(page.metadata.per == 2)
+                #expect(page.metadata.page == 1)
+            })
+
+            // Request page 2 with per=2 → 1 remaining item
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&page=2&per=2", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
+                #expect(page.items.count == 1)
+                #expect(page.metadata.total == 3)
+                #expect(page.metadata.page == 2)
             })
         }
     }
