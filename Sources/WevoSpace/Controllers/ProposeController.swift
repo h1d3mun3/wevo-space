@@ -285,7 +285,9 @@ struct ProposeController: RouteCollection {
             counterparty!.honorSignature = input.signature
             counterparty!.honorTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
-            creatorHonored = propose.honorCreatorSignature != nil
+            // Re-fetch from DB to avoid stale in-memory read of honorCreatorSignature
+            let refreshed = try await Propose.find(proposeID, on: req.db)
+            creatorHonored = refreshed?.honorCreatorSignature != nil
         }
 
         // Auto-transition to honored when all participants have signed
