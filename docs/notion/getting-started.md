@@ -7,6 +7,26 @@ Signing happens entirely on-device using the Keychain. The server (wevo-space) i
 
 ---
 
+## Why wevo exists
+
+When two people make an agreement, the record of that agreement usually lives inside a third-party platform — a freelance marketplace, a rental service, a project management tool. When that platform shuts down, changes its terms, or simply becomes irrelevant, the history disappears with it.
+
+Most trust and reputation systems share the same underlying problem:
+
+- **Opaque** — you can't see how scores or ratings are derived
+- **Non-portable** — you can't take your history with you
+- **Platform-owned** — the service decides what counts and what doesn't
+
+wevo is an exploration of a different approach.
+
+Rather than computing a trust score, wevo records *what actually happened*: a proposal was made, both parties signed it, and the agreement was honored. Each event is cryptographically signed by the people involved, stored on your own device, and owned by you — not by any platform.
+
+The name reflects the idea: **W**eb of **E**ndorsed **V**erifiable **O**aths. Not scores. Not ratings. Signed commitments that you carry with you.
+
+> This is not a finished product or a formal protocol. It's an experiment — a way to ask: *what if the record of an agreement belonged to the people who made it?*
+
+---
+
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
