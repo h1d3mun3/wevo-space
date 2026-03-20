@@ -166,6 +166,11 @@ app.routes.defaultMaxBodySize = "1mb"
 - OpenAPI (English): [api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml)
 - OpenAPI (日本語): [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
 
+## Client Documentation
+
+- Getting Started (English): [docs/notion/getting-started.md](docs/notion/getting-started.md)
+- Getting Started (日本語): [docs/notion/getting-started-ja.md](docs/notion/getting-started-ja.md)
+
 ---
 ---
 
@@ -330,4 +335,9 @@ app.routes.defaultMaxBodySize = "1mb"
 - [Vapor](https://vapor.codes)（Swift）で構築
 - 開発環境は SQLite、本番環境は PostgreSQL ― 環境変数に応じて自動切り替え
 - CryptoKit による署名検証（P-256）、外部の暗号ライブラリ依存なし
+
+## クライアントドキュメント
+
+- Getting Started（英語）: [docs/notion/getting-started.md](docs/notion/getting-started.md)
+- Getting Started（日本語）: [docs/notion/getting-started-ja.md](docs/notion/getting-started-ja.md)
 
