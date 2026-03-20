@@ -20,6 +20,7 @@ public func configure(_ app: Application) async throws {
 
     app.migrations.add(CreateProposesTable())
     app.migrations.add(CreateCounterpartiesTable())
+    app.migrations.add(AddSignatureVersionAndResetProposes())
 
     // register routes
     try routes(app)

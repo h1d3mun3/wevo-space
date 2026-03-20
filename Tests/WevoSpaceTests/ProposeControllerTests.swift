@@ -33,6 +33,7 @@ struct ProposeControllerTests {
             app.databases.use(.sqlite(.memory), as: .sqlite)
             app.migrations.add(CreateProposesTable())
             app.migrations.add(CreateCounterpartiesTable())
+            app.migrations.add(AddSignatureVersionAndResetProposes())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
@@ -68,7 +69,8 @@ struct ProposeControllerTests {
         key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
     }
 
-    /// Creates a Propose for testing and returns its key data
+    /// Creates a Propose for testing and returns its key data.
+    /// v1 message: "proposed." + proposeId + contentHash + creatorPublicKey + sortedCounterpartyKeys + createdAt
     private func createPropose(
         app: Application,
         proposeId: UUID = UUID(),
@@ -78,7 +80,7 @@ struct ProposeControllerTests {
         counterpartyKeyPair: KeyPair = KeyPair()
     ) async throws -> (proposeId: UUID, contentHash: String, createdAt: String, creator: KeyPair, counterparty: KeyPair) {
         // Single counterparty: sorted().joined() == publicKeyBase64
-        let message = proposeId.uuidString + contentHash + counterpartyKeyPair.publicKeyBase64 + createdAt
+        let message = "proposed." + proposeId.uuidString + contentHash + creatorKeyPair.publicKeyBase64 + counterpartyKeyPair.publicKeyBase64 + createdAt
         let creatorSig = try creatorKeyPair.sign(message)
 
         let input = CreateProposeInput(
@@ -110,7 +112,8 @@ struct ProposeControllerTests {
             let creator = KeyPair()
             let counterparty = KeyPair()
 
-            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            // v1: "proposed." + proposeId + contentHash + creatorPublicKey + sortedCounterpartyKeys + createdAt
+            let message = "proposed." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + counterparty.publicKeyBase64 + createdAt
             let creatorSig = try creator.sign(message)
 
             let input = CreateProposeInput(
@@ -132,6 +135,7 @@ struct ProposeControllerTests {
                 #expect(propose?.contentHash == contentHash)
                 #expect(propose?.proposeStatus == .proposed)
                 #expect(propose?.creatorPublicKey == creator.publicKeyBase64)
+                #expect(propose?.signatureVersion == 1)
 
                 let counterparties = try await ProposeCounterparty.query(on: app.db)
                     .filter(\.$publicKey == counterparty.publicKeyBase64)
@@ -169,6 +173,61 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("Creating a Propose with old message format (without 'proposed.' prefix) returns unauthorized")
+    func createProposeWithOldMessageFormatReturnsUnauthorized() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let counterparty = KeyPair()
+
+            // Old format (no "proposed." prefix, no creatorPublicKey)
+            let oldMessage = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let creatorSig = try creator.sign(oldMessage)
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: creatorSig,
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
+                createdAt: createdAt
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
+    @Test("Creating a Propose with an invalid JWK public key returns bad request")
+    func createProposeWithInvalidJWKReturns400() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let counterparty = KeyPair()
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: "not-a-valid-jwk",
+                creatorSignature: "someSig",
+                counterpartyPublicKeys: [counterparty.publicKeyBase64],
+                createdAt: createdAt
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
     @Test("Duplicate Propose creation with the same ID returns an error")
     func createDuplicateProposeReturnsConflict() async throws {
         try await withApp { app in
@@ -178,7 +237,7 @@ struct ProposeControllerTests {
             let creator = KeyPair()
             let counterparty = KeyPair()
 
-            let message = proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + createdAt
+            let message = "proposed." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + counterparty.publicKeyBase64 + createdAt
             let creatorSig = try creator.sign(message)
 
             let input = CreateProposeInput(
@@ -263,6 +322,7 @@ struct ProposeControllerTests {
                 #expect(propose.id == proposeId)
                 #expect(propose.contentHash == contentHash)
                 #expect(propose.status == ProposeStatus.proposed.rawValue)
+                #expect(propose.signatureVersion == 1)
             })
         }
     }
@@ -335,7 +395,7 @@ struct ProposeControllerTests {
         try await withApp { app in
             let creator = KeyPair()
             let counterparty = KeyPair()
-            let (proposeId, contentHash, createdAt, _, counterpartyKP) = try await createPropose(
+            let (proposeId, contentHash, _, _, counterpartyKP) = try await createPropose(
                 app: app,
                 creatorKeyPair: creator,
                 counterpartyKeyPair: counterparty
@@ -377,12 +437,44 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("List endpoint returns correct pagination metadata")
+    func listReturnsPaginationMetadata() async throws {
+        try await withApp { app in
+            let creator = KeyPair()
+            let encodedKey = encodePublicKey(creator.publicKeyBase64)
+
+            // Create 3 proposes by the same creator
+            for _ in 1...3 {
+                _ = try await createPropose(app: app, creatorKeyPair: creator)
+            }
+
+            // Request page 1 with per=2
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&page=1&per=2", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
+                #expect(page.items.count == 2)
+                #expect(page.metadata.total == 3)
+                #expect(page.metadata.per == 2)
+                #expect(page.metadata.page == 1)
+            })
+
+            // Request page 2 with per=2 → 1 remaining item
+            try await app.testing().test(.GET, "v1/proposes?publicKey=\(encodedKey)&page=2&per=2", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let page = try res.content.decode(Page<ProposeResponse>.self)
+                #expect(page.items.count == 1)
+                #expect(page.metadata.total == 3)
+                #expect(page.metadata.page == 2)
+            })
+        }
+    }
+
     // MARK: - PATCH /v1/proposes/:id/sign
 
     @Test("Counterparty signing transitions to signed state")
     func signProposeSuccess() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             // sign message: "signed." + proposeId + contentHash + signerPublicKey + timestamp
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -410,7 +502,7 @@ struct ProposeControllerTests {
     @Test("Signing with an invalid signature returns an error")
     func signProposeWithInvalidSignature() async throws {
         try await withApp { app in
-            let (proposeId, _, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, _, _, _, counterparty) = try await createPropose(app: app)
 
             let signTimestamp = "2026-01-02T00:00:00Z"
             let wrongSig = try counterparty.sign("wrong-message")
@@ -463,7 +555,7 @@ struct ProposeControllerTests {
     @Test("Non-counterparty signing returns 403")
     func signByNonCounterpartyReturnsForbidden() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, _) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, _) = try await createPropose(app: app)
 
             let thirdParty = KeyPair()
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -482,7 +574,7 @@ struct ProposeControllerTests {
     @Test("Signing a Propose in a non-proposed state returns an error")
     func signNonProposedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             // First sign (proposed → signed)
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -512,8 +604,9 @@ struct ProposeControllerTests {
         try await withApp { app in
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
 
+            // v1: "dissolved." + proposeId + contentHash + signerPublicKey + timestamp
             let timestamp = "2026-01-02T00:00:00Z"
-            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let message = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             let sig = try creator.sign(message)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -534,7 +627,7 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             let timestamp = "2026-01-02T00:00:00Z"
-            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let message = "dissolved." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
             let sig = try counterparty.sign(message)
             let input = TransitionInput(publicKey: counterparty.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -554,7 +647,7 @@ struct ProposeControllerTests {
             let actor = KeyPair()
             let proposeId = UUID()
             let timestamp = "2026-01-02T00:00:00Z"
-            let message = "dissolved." + proposeId.uuidString + "hash" + timestamp
+            let message = "dissolved." + proposeId.uuidString + "hash" + actor.publicKeyBase64 + timestamp
             let sig = try actor.sign(message)
             let input = TransitionInput(publicKey: actor.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -593,7 +686,7 @@ struct ProposeControllerTests {
 
             let thirdParty = KeyPair()
             let timestamp = "2026-01-02T00:00:00Z"
-            let message = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let message = "dissolved." + proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + timestamp
             let sig = try thirdParty.sign(message)
             let input = TransitionInput(publicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -608,7 +701,7 @@ struct ProposeControllerTests {
     @Test("A Propose in signed state cannot be dissolved")
     func dissolveSignedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -622,7 +715,7 @@ struct ProposeControllerTests {
 
             // Dissolve attempt → conflict
             let timestamp = "2026-01-02T00:00:00Z"
-            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + timestamp
+            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             let dissolveSig = try creator.sign(dissolveMessage)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: dissolveSig, timestamp: timestamp)
 
@@ -639,7 +732,7 @@ struct ProposeControllerTests {
     @Test("Both parties honoring transitions to honored state")
     func honorBothPartiesSuccess() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -651,11 +744,13 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
+            // v1: each signer signs a message containing their own public key
             let timestamp = "2026-01-03T00:00:00Z"
-            let honorMessage = "honored." + proposeId.uuidString + contentHash + timestamp
+            let creatorHonorMessage = "honored." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let counterpartyHonorMessage = "honored." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
 
             // Creator honors
-            let creatorHonorSig = try creator.sign(honorMessage)
+            let creatorHonorSig = try creator.sign(creatorHonorMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorHonorSig, timestamp: timestamp))
             }, afterResponse: { res async throws in
@@ -666,7 +761,7 @@ struct ProposeControllerTests {
             })
 
             // Counterparty honors → honored
-            let counterpartyHonorSig = try counterparty.sign(honorMessage)
+            let counterpartyHonorSig = try counterparty.sign(counterpartyHonorMessage)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: counterpartyHonorSig, timestamp: timestamp))
             }, afterResponse: { res async throws in
@@ -680,7 +775,7 @@ struct ProposeControllerTests {
     @Test("Third party attempting to honor returns 403")
     func honorByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -694,7 +789,7 @@ struct ProposeControllerTests {
 
             let thirdParty = KeyPair()
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "honored." + proposeId.uuidString + contentHash + timestamp
+            let message = "honored." + proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + timestamp
             let sig = try thirdParty.sign(message)
             let input = TransitionInput(publicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -709,7 +804,7 @@ struct ProposeControllerTests {
     @Test("Honoring with an invalid signature returns an error")
     func honorWithInvalidSignatureReturnsUnauthorized() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -739,7 +834,7 @@ struct ProposeControllerTests {
             let creator = KeyPair()
             let proposeId = UUID()
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "honored." + proposeId.uuidString + "hash" + timestamp
+            let message = "honored." + proposeId.uuidString + "hash" + creator.publicKeyBase64 + timestamp
             let sig = try creator.sign(message)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -757,7 +852,7 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
 
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "honored." + proposeId.uuidString + contentHash + timestamp
+            let message = "honored." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             let sig = try creator.sign(message)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -774,7 +869,7 @@ struct ProposeControllerTests {
     @Test("Creator parting immediately transitions to parted state")
     func partByCreatorImmediatelyTransitionsToParted() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -786,8 +881,9 @@ struct ProposeControllerTests {
                 #expect(res.status == .ok)
             })
 
+            // v1: "parted." + proposeId + contentHash + signerPublicKey + timestamp
             let timestamp = "2026-01-03T00:00:00Z"
-            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+            let partMessage = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
 
             // Creator parts → immediately parted
             let creatorPartSig = try creator.sign(partMessage)
@@ -804,7 +900,7 @@ struct ProposeControllerTests {
     @Test("Counterparty parting immediately transitions to parted state")
     func partByCounterpartyImmediatelyTransitionsToParted() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -817,7 +913,7 @@ struct ProposeControllerTests {
             })
 
             let timestamp = "2026-01-03T00:00:00Z"
-            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+            let partMessage = "parted." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
 
             // Counterparty parts → immediately parted
             let counterpartyPartSig = try counterparty.sign(partMessage)
@@ -834,7 +930,7 @@ struct ProposeControllerTests {
     @Test("Parting with an invalid signature returns an error")
     func partWithInvalidSignatureReturnsUnauthorized() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -864,7 +960,7 @@ struct ProposeControllerTests {
             let creator = KeyPair()
             let proposeId = UUID()
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "parted." + proposeId.uuidString + "hash" + timestamp
+            let message = "parted." + proposeId.uuidString + "hash" + creator.publicKeyBase64 + timestamp
             let sig = try creator.sign(message)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -882,7 +978,7 @@ struct ProposeControllerTests {
             let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
 
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "parted." + proposeId.uuidString + contentHash + timestamp
+            let message = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             let sig = try creator.sign(message)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -897,7 +993,7 @@ struct ProposeControllerTests {
     @Test("A second part request after already parted returns 409")
     func partAlreadyPartedReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -910,7 +1006,7 @@ struct ProposeControllerTests {
             })
 
             let timestamp = "2026-01-03T00:00:00Z"
-            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+            let partMessage = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             let creatorPartSig = try creator.sign(partMessage)
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp)
 
@@ -935,7 +1031,7 @@ struct ProposeControllerTests {
     @Test("Third party attempting to part returns 403")
     func partByThirdPartyReturnsForbidden() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, _, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -949,7 +1045,7 @@ struct ProposeControllerTests {
 
             let thirdParty = KeyPair()
             let timestamp = "2026-01-03T00:00:00Z"
-            let message = "parted." + proposeId.uuidString + contentHash + timestamp
+            let message = "parted." + proposeId.uuidString + contentHash + thirdParty.publicKeyBase64 + timestamp
             let sig = try thirdParty.sign(message)
             let input = TransitionInput(publicKey: thirdParty.publicKeyBase64, signature: sig, timestamp: timestamp)
 
@@ -966,7 +1062,7 @@ struct ProposeControllerTests {
     @Test("A Propose in honored state cannot be dissolved")
     func dissolveHonoredProposeReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -976,19 +1072,20 @@ struct ProposeControllerTests {
                 try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
-            // signed → honored
+            // signed → honored (each signer uses their own public key in the message)
             let timestamp = "2026-01-03T00:00:00Z"
-            let honorMessage = "honored." + proposeId.uuidString + contentHash + timestamp
+            let creatorHonorMessage = "honored." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let counterpartyHonorMessage = "honored." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
-                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(honorMessage), timestamp: timestamp))
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(creatorHonorMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
-                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(honorMessage), timestamp: timestamp))
+                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(counterpartyHonorMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
 
             // honored → dissolve attempt → conflict
             let dissolveTimestamp = "2026-01-04T00:00:00Z"
-            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + dissolveTimestamp
+            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + dissolveTimestamp
             let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(dissolveMessage), timestamp: dissolveTimestamp)
 
             try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
@@ -1002,7 +1099,7 @@ struct ProposeControllerTests {
     @Test("A Propose in parted state cannot be signed")
     func signPartedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → signed
             let signTimestamp = "2026-01-02T00:00:00Z"
@@ -1014,7 +1111,7 @@ struct ProposeControllerTests {
 
             // signed → parted
             let timestamp = "2026-01-03T00:00:00Z"
-            let partMessage = "parted." + proposeId.uuidString + contentHash + timestamp
+            let partMessage = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(partMessage), timestamp: timestamp))
             }, afterResponse: { res async throws in #expect(res.status == .ok) })
@@ -1041,9 +1138,9 @@ struct ProposeControllerTests {
             let counterparty1 = KeyPair()
             let counterparty2 = KeyPair()
 
-            // Signature message: counterpartyPublicKeys sorted & joined
+            // v1: "proposed." + proposeId + contentHash + creatorPublicKey + sortedCounterpartyKeys + createdAt
             let sortedKeys = [counterparty1.publicKeyBase64, counterparty2.publicKeyBase64].sorted().joined()
-            let createMessage = proposeId.uuidString + contentHash + sortedKeys + createdAt
+            let createMessage = "proposed." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + sortedKeys + createdAt
             let creatorSig = try creator.sign(createMessage)
 
             let createInput = CreateProposeInput(
@@ -1088,11 +1185,11 @@ struct ProposeControllerTests {
     @Test("A Propose in dissolved state cannot be signed")
     func signDissolvedProposeReturnsConflict() async throws {
         try await withApp { app in
-            let (proposeId, contentHash, createdAt, creator, counterparty) = try await createPropose(app: app)
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
             // proposed → dissolved
             let dissolveTimestamp = "2026-01-02T00:00:00Z"
-            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + dissolveTimestamp
+            let dissolveMessage = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + dissolveTimestamp
             let dissolveInput = TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(dissolveMessage), timestamp: dissolveTimestamp)
             try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(dissolveInput)

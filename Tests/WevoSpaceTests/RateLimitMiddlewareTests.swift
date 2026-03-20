@@ -126,6 +126,53 @@ struct RateLimitMiddlewareTests {
         }
     }
 
+    @Test("cleanup() runs without error on empty state")
+    func cleanupEmptyState() async throws {
+        let rateLimiter = RateLimitMiddleware(requestLimit: 5, timeWindow: 10)
+        // Should not crash or throw when histories is empty
+        await rateLimiter.cleanup()
+    }
+
+    @Test("cleanup() removes stale entries, allowing new requests from that IP")
+    func cleanupRemovesStaleEntries() async throws {
+        // Use a very short time window so entries expire quickly
+        let rateLimiter = RateLimitMiddleware(requestLimit: 2, timeWindow: 0.05)
+
+        let app = try await Application.make(.testing)
+        defer { Task { try? await app.asyncShutdown() } }
+        app.databases.use(.sqlite(.memory), as: .sqlite)
+        app.migrations.add(CreateProposesTable())
+        try await app.autoMigrate()
+
+        let limited = app.grouped(rateLimiter)
+        limited.get("test") { _ in "ok" }
+
+        // Fill the rate limit for the default test IP
+        for _ in 1...2 {
+            try await app.testing().test(.GET, "test", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+        }
+
+        // 3rd request within the window should be rate-limited
+        try await app.testing().test(.GET, "test", afterResponse: { res async throws in
+            #expect(res.status == .tooManyRequests)
+        })
+
+        // Wait for the time window to expire
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Call cleanup() — removes expired entries from histories
+        await rateLimiter.cleanup()
+
+        // After cleanup, the slate is clean and requests should succeed again
+        try await app.testing().test(.GET, "test", afterResponse: { res async throws in
+            #expect(res.status == .ok)
+        })
+
+        try await app.autoRevert()
+    }
+
     @Test("Rate limit headers are set correctly")
     func rateLimitHeaders() async throws {
         try await withApp { app in

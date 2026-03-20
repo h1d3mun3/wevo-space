@@ -33,6 +33,7 @@ struct RequestSizeLimitTests {
             app.routes.defaultMaxBodySize = "1mb"
             app.migrations.add(CreateProposesTable())
             app.migrations.add(CreateCounterpartiesTable())
+            app.migrations.add(AddSignatureVersionAndResetProposes())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
@@ -81,7 +82,8 @@ struct RequestSizeLimitTests {
             let counterpartyPubKey = counterpartyKey.publicKey.jwkString
             let creatorPubKey = privateKey.publicKey.jwkString
 
-            let message = proposeId.uuidString + contentHash + counterpartyPubKey + createdAt
+            // v1: "proposed." + proposeId + contentHash + creatorPublicKey + sortedCounterpartyKeys + createdAt
+            let message = "proposed." + proposeId.uuidString + contentHash + creatorPubKey + counterpartyPubKey + createdAt
             let sig = try privateKey.signature(for: Data(message.utf8))
 
             let input = CreateProposeInput(
