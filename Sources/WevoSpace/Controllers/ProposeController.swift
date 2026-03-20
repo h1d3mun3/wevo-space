@@ -16,6 +16,7 @@ struct ProposeResponse: Content {
     let partCreatorTimestamp: String?
     let dissolvedAt: String?
     let status: String
+    let signatureVersion: Int
     let createdAt: String
     let updatedAt: Date?
 
@@ -51,6 +52,7 @@ struct ProposeResponse: Content {
         self.partCreatorTimestamp = propose.partCreatorTimestamp
         self.dissolvedAt = propose.dissolvedAt
         self.status = propose.status
+        self.signatureVersion = propose.signatureVersion
         self.createdAt = propose.createdAt
         self.updatedAt = propose.updatedAt
     }
@@ -126,10 +128,10 @@ struct ProposeController: RouteCollection {
             throw Abort(.conflict, reason: "A Propose with the same ID already exists")
         }
 
-        // Signature verification:
-        // proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt
+        // Signature verification (v1):
+        // "proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt
         let sortedKeys = input.counterpartyPublicKeys.sorted().joined()
-        let message = input.proposeId + input.contentHash + sortedKeys + input.createdAt
+        let message = "proposed." + input.proposeId + input.contentHash + input.creatorPublicKey + sortedKeys + input.createdAt
         try verifySignature(publicKey: input.creatorPublicKey, signature: input.creatorSignature, message: message)
 
         let propose = Propose(
@@ -232,8 +234,8 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can dissolve it")
         }
 
-        // Signature verification: "dissolved." + proposeId + contentHash + timestamp
-        let message = "dissolved." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        // Signature verification (v1): "dissolved." + proposeId + contentHash + signerPublicKey + timestamp
+        let message = "dissolved." + propose.id!.uuidString + propose.contentHash + input.publicKey + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
         propose.proposeStatus = .dissolved
@@ -269,8 +271,8 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can honor it")
         }
 
-        // Signature verification: "honored." + proposeId + contentHash + timestamp
-        let message = "honored." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        // Signature verification (v1): "honored." + proposeId + contentHash + signerPublicKey + timestamp
+        let message = "honored." + propose.id!.uuidString + propose.contentHash + input.publicKey + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
         let creatorHonored: Bool
@@ -321,8 +323,8 @@ struct ProposeController: RouteCollection {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can part it")
         }
 
-        // Signature verification: "parted." + proposeId + contentHash + timestamp
-        let message = "parted." + propose.id!.uuidString + propose.contentHash + input.timestamp
+        // Signature verification (v1): "parted." + proposeId + contentHash + signerPublicKey + timestamp
+        let message = "parted." + propose.id!.uuidString + propose.contentHash + input.publicKey + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
         if isCreator {
