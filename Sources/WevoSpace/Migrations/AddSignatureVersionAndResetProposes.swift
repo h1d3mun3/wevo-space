@@ -5,7 +5,7 @@ import SQLKit
 /// then adds the `signature_version` column to the proposes table.
 struct AddSignatureVersionAndResetProposes: AsyncMigration {
     func prepare(on database: any Database) async throws {
-        guard let sql = database as? SQLDatabase else {
+        guard let sql = database as? any SQLDatabase else {
             fatalError("AddSignatureVersionAndResetProposes requires a SQL database")
         }
 
