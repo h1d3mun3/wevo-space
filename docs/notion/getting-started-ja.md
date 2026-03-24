@@ -46,7 +46,7 @@ wevoは、そこへの別のアプローチを探るプロジェクトです。
 | **Identity** | あなた自身を表すP256署名キーペア。Keychainに保存される。複数持てる |
 | **Space** | Proposeをまとめるグループ。wevo-spaceサーバーのURLと紐づく |
 | **Contact** | 相手の公開鍵（JWK形式）を保存したもの。Propose送信先に使う |
-| **Propose** | 2者間で署名し合うメッセージ。本文はローカルのみ保存 |
+| **Propose** | 多者間で署名し合うメッセージ（1 creator + n counterparties）。本文はローカルのみ保存 |
 
 ### データの流れ
 
@@ -140,7 +140,7 @@ Proposeを作成するには相手の公開鍵が必要です。まず相手にC
 作成時に内部で以下の署名対象メッセージが構築されます:
 
 ```
-proposeId + SHA256(message) + counterpartyPublicKey + createdAt
+"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(ソート&結合) + createdAt
 ```
 
 - ローカルのSwiftDataに保存される
@@ -164,7 +164,7 @@ proposeId + SHA256(message) + counterpartyPublicKey + createdAt
 署名時の署名対象メッセージ:
 
 ```
-"signed." + proposeId + SHA256(message) + signerPublicKey + timestamp
+"signed." + proposeId + contentHash + signerPublicKey + timestamp
 ```
 
 署名後のステータスは `signed` になります。
@@ -180,11 +180,11 @@ proposeId + SHA256(message) + counterpartyPublicKey + createdAt
 
 Proposeが `signed` 状態になった後、以下のアクションが取れます。
 
-| アクション | 意味 | 署名メッセージのプレフィックス |
+| アクション | 意味 | 署名対象メッセージ |
 |-----------|------|------|
-| **Honor** | 双方が合意を完了したことを表明 | `"honored."` |
-| **Part** | 一方が離脱を表明 | `"part."` |
-| **Dissolve** | Proposeを破棄 | — |
+| **Honor** | 双方が合意を完了したことを表明 | `"honored." + proposeId + contentHash + publicKey + timestamp` |
+| **Part** | いずれかが離脱を表明（即座にparted遷移） | `"parted." + proposeId + contentHash + publicKey + timestamp` |
+| **Dissolve** | Proposeを破棄（proposed状態のみ） | `"dissolved." + proposeId + contentHash + publicKey + timestamp` |
 
 - `honored` / `parted` になるとCompletedタブに移動する
 - すべての状態遷移はサーバー（wevo-space）に送信される

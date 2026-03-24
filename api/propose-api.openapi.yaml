@@ -30,7 +30,7 @@ paths:
         - name: publicKey
           in: query
           required: true
-          description: 検索する公開鍵（Base64 / X.963形式）
+          description: 検索する公開鍵（JWK JSON文字列、パーセントエンコード済み）
           schema:
             type: string
         - name: status
@@ -70,7 +70,7 @@ paths:
       summary: Propose作成
       description: |
         作成者が新しいProposeを作成します。
-        署名対象: `proposeId + contentHash + counterpartyPublicKeys（辞書順ソート&結合） + createdAt`
+        署名対象: `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys（辞書順ソート&結合） + createdAt`
       tags: [Propose]
       requestBody:
         required: true
@@ -137,7 +137,7 @@ paths:
       summary: Proposeを解消（proposed → dissolved）
       description: |
         作成者またはいずれかの相手方が署名してProposeを解消します。proposed状態のみ可。
-        署名対象: `"dissolved." + proposeId + contentHash + timestamp`
+        署名対象: `"dissolved." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -184,7 +184,7 @@ paths:
       summary: 相手方が署名（全員揃うとproposed → signed）
       description: |
         登録済みの相手方が署名します。全ての相手方が署名した時点でsigned状態に自動遷移します。
-        署名対象: `proposeId + contentHash + signerPublicKey + createdAt`
+        署名対象: `"signed." + proposeId + contentHash + signerPublicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -197,12 +197,12 @@ paths:
             example:
               signerPublicKey: "BIrH..."
               signature: "MEUC..."
-              createdAt: "2026-01-01T00:00:00Z"
+              timestamp: "2026-01-01T00:00:00Z"
       responses:
         '200':
           description: 署名成功。全相手方が揃えばsignedに遷移
         '400':
-          description: createdAtが不一致または無効なUUID
+          description: 無効なUUID形式
           content:
             application/json:
               schema:
@@ -237,7 +237,7 @@ paths:
       summary: Honor署名を追加（全員揃うとsigned → honored）
       description: |
         各参加者が署名を追加します。作成者と全ての相手方が揃うとhonored状態に自動遷移。
-        署名対象: `"honored." + proposeId + contentHash + timestamp`
+        署名対象: `"honored." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -281,10 +281,10 @@ paths:
 
   /proposes/{id}/part:
     patch:
-      summary: Part署名を追加（全員揃うとsigned → parted）
+      summary: Part署名を追加（いずれか1人でsigned → 即座にparted）
       description: |
-        各参加者が署名を追加します。作成者と全ての相手方が揃うとparted状態に自動遷移。
-        署名対象: `"parted." + proposeId + contentHash + timestamp`
+        いずれかの参加者が署名を追加します。1人でも送信した時点で即座にparted状態へ遷移します。全員分を待ちません。
+        署名対象: `"parted." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -300,7 +300,7 @@ paths:
               timestamp: "2026-01-03T00:00:00Z"
       responses:
         '200':
-          description: 署名記録。全員揃えばparted遷移
+          description: 署名記録。即座にparted遷移
         '401':
           description: 署名検証失敗
           content:
@@ -350,7 +350,7 @@ components:
           description: コンテンツのハッシュ値
         creatorPublicKey:
           type: string
-          description: 作成者の公開鍵（Base64 / X.963形式）
+          description: 作成者の公開鍵（JWK JSON文字列）
         creatorSignature:
           type: string
           description: 作成者の署名（Base64 / DER形式）
@@ -363,14 +363,29 @@ components:
           type: string
           nullable: true
           description: 作成者のhonor署名
+        honorCreatorTimestamp:
+          type: string
+          nullable: true
+          description: 作成者のhonorタイムスタンプ（ISO8601）
         partCreatorSignature:
           type: string
           nullable: true
           description: 作成者のpart署名
+        partCreatorTimestamp:
+          type: string
+          nullable: true
+          description: 作成者のpartタイムスタンプ（ISO8601）
+        dissolvedAt:
+          type: string
+          nullable: true
+          description: 解消タイムスタンプ（ISO8601）
         status:
           type: string
           enum: [proposed, signed, honored, dissolved, parted]
           description: 現在の状態
+        signatureVersion:
+          type: integer
+          description: 署名スキームバージョン（現行: 1）
         createdAt:
           type: string
           description: 作成日時（ISO8601、クライアントが生成）
@@ -385,19 +400,31 @@ components:
       properties:
         publicKey:
           type: string
-          description: 相手方の公開鍵（Base64 / X.963形式）
+          description: 相手方の公開鍵（JWK JSON文字列）
         signSignature:
           type: string
           nullable: true
           description: /sign の署名（署名後にセット）
+        signTimestamp:
+          type: string
+          nullable: true
+          description: /sign のタイムスタンプ（ISO8601）
         honorSignature:
           type: string
           nullable: true
           description: /honor の署名
+        honorTimestamp:
+          type: string
+          nullable: true
+          description: /honor のタイムスタンプ（ISO8601）
         partSignature:
           type: string
           nullable: true
           description: /part の署名
+        partTimestamp:
+          type: string
+          nullable: true
+          description: /part のタイムスタンプ（ISO8601）
 
     ProposePage:
       type: object
@@ -434,7 +461,7 @@ components:
           description: コンテンツのハッシュ値
         creatorPublicKey:
           type: string
-          description: 作成者の公開鍵（Base64 / X.963形式）
+          description: 作成者の公開鍵（JWK JSON文字列）
         creatorSignature:
           type: string
           description: 作成者の署名（Base64 / DER形式）
@@ -453,17 +480,17 @@ components:
       required:
         - signerPublicKey
         - signature
-        - createdAt
+        - timestamp
       properties:
         signerPublicKey:
           type: string
-          description: 署名者の公開鍵（登録済みの相手方であること）
+          description: 署名者の公開鍵（登録済みの相手方であること、JWK JSON文字列）
         signature:
           type: string
           description: 署名者の署名（Base64 / DER形式）
-        createdAt:
+        timestamp:
           type: string
-          description: ProposeのcreatedAt（一致確認用）
+          description: 操作タイムスタンプ（ISO8601）
 
     TransitionInput:
       type: object

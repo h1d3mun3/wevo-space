@@ -2,7 +2,7 @@
 
 💧 Vapor Web フレームワークで構築したプロジェクトです。
 
-2者間の合意を暗号署名で記録・管理するAPIサーバーです。
+多者間の合意を暗号署名で記録・管理するAPIサーバーです（1 creator : n counterparties）。
 
 > English version: [README.md](README.md)
 
@@ -31,12 +31,12 @@
 ### 状態遷移
 
 ```
-proposed ──sign──→ signed ──honor（両者）──→ honored
-    │                 │
-  dissolve          part（両者）
-    │                 │
-    ↓                 ↓
-dissolved           parted
+proposed ──sign（全相手方）──→ signed ──honor（全員）──→ honored
+    │                              │
+  dissolve                      part（いずれか1人→即座に遷移）
+    │                              │
+    ↓                              ↓
+dissolved                       parted
 ```
 
 レート制限ヘッダー:
@@ -138,18 +138,28 @@ app.routes.defaultMaxBodySize = "1mb"
 
 ### データモデル
 
-**Propose** — 2者間合意の本体
+**Propose** — 多者間合意の本体（1 creator : n counterparties）
 
 | フィールド | 説明 |
 |---|---|
 | `contentHash` | コンテンツのハッシュ値 |
 | `creatorPublicKey` / `creatorSignature` | 作成者の鍵と署名 |
-| `counterpartyPublicKey` / `counterpartySignature` | 相手方の鍵と署名 |
-| `honorCreator/CounterpartySignature` | honor署名（両者） |
-| `partCreator/CounterpartySignature` | part署名（両者） |
+| `honorCreatorSignature` / `honorCreatorTimestamp` | 作成者のhonor署名 |
+| `partCreatorSignature` / `partCreatorTimestamp` | 作成者のpart署名 |
+| `dissolvedAt` | 解消タイムスタンプ |
 | `status` | 現在の状態 |
+| `signatureVersion` | 署名スキームバージョン（現行: 1） |
 | `createdAt` | 作成日時（クライアント生成） |
 | `updatedAt` | 最終更新日時（サーバー管理） |
+
+**ProposeCounterparty** — 各相手方の署名情報（別テーブル、1:n）
+
+| フィールド | 説明 |
+|---|---|
+| `publicKey` | 相手方の公開鍵（JWK形式） |
+| `signSignature` / `signTimestamp` | /sign の署名 |
+| `honorSignature` / `honorTimestamp` | /honor の署名 |
+| `partSignature` / `partTimestamp` | /part の署名 |
 
 ### セキュリティ原則
 

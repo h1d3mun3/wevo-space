@@ -22,8 +22,12 @@ A Propose is a mechanism for recording and managing multi-party agreements with 
 | `creatorSignature` | string | Creator's signature (Base64 / DER) |
 | `counterparties` | CounterpartyInfo[] | List of counterparties and their signatures |
 | `honorCreatorSignature` | string? | Creator's honor signature |
+| `honorCreatorTimestamp` | string? | Creator's honor timestamp (ISO8601) |
 | `partCreatorSignature` | string? | Creator's part signature |
+| `partCreatorTimestamp` | string? | Creator's part timestamp (ISO8601) |
+| `dissolvedAt` | string? | Dissolution timestamp (ISO8601) |
 | `status` | string | Current status (see below) |
+| `signatureVersion` | integer | Signature scheme version (current: 1) |
 | `createdAt` | string | Creation timestamp (ISO8601, client-generated) |
 | `updatedAt` | string? | Last updated timestamp (server-managed) |
 
@@ -33,8 +37,11 @@ A Propose is a mechanism for recording and managing multi-party agreements with 
 |---|---|---|
 | `publicKey` | string | Counterparty's public key (JWK JSON string) |
 | `signSignature` | string? | Signature for `/sign` (set after signing) |
+| `signTimestamp` | string? | Timestamp for `/sign` (ISO8601) |
 | `honorSignature` | string? | Signature for `/honor` |
+| `honorTimestamp` | string? | Timestamp for `/honor` (ISO8601) |
 | `partSignature` | string? | Signature for `/part` |
+| `partTimestamp` | string? | Timestamp for `/part` (ISO8601) |
 
 ### Status Values
 
@@ -44,14 +51,14 @@ A Propose is a mechanism for recording and managing multi-party agreements with 
 | `signed` | All counterparties signed; agreement established |
 | `honored` | Creator + all counterparties submitted honor signatures |
 | `dissolved` | Dissolved from `proposed` state |
-| `parted` | Creator + all counterparties submitted part signatures |
+| `parted` | Any participant submitted a part signature (immediate transition) |
 
 ### State Transition Diagram
 
 ```
 proposed ──sign (all counterparties)──→ signed ──honor (all)──→ honored
     │                                      │
-  dissolve                              part (all)
+  dissolve                              part (any one → immediate)
     │                                      │
     ↓                                      ↓
 dissolved                               parted
@@ -79,11 +86,11 @@ The string to sign for each operation is formed by concatenating the following f
 
 | Operation | Message |
 |---|---|
-| Create | `proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt` |
-| sign | `proposeId + contentHash + signerPublicKey + createdAt` |
-| dissolve | `"dissolved." + proposeId + contentHash + timestamp` |
-| honor | `"honored." + proposeId + contentHash + timestamp` |
-| part | `"parted." + proposeId + contentHash + timestamp` |
+| Create | `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt` |
+| sign | `"signed." + proposeId + contentHash + signerPublicKey + timestamp` |
+| dissolve | `"dissolved." + proposeId + contentHash + publicKey + timestamp` |
+| honor | `"honored." + proposeId + contentHash + publicKey + timestamp` |
+| part | `"parted." + proposeId + contentHash + publicKey + timestamp` |
 
 > **Note**: Use the uppercase UUID string format for `proposeId` (e.g., `550E8400-E29B-41D4-A716-446655440000`).
 >
@@ -101,7 +108,7 @@ The string to sign for each operation is formed by concatenating the following f
 | `PATCH` | `/proposes/:id/sign` | A counterparty signs (auto-transitions to `signed` when all have signed) |
 | `DELETE` | `/proposes/:id` | Dissolve (proposed → dissolved) |
 | `PATCH` | `/proposes/:id/honor` | Submit honor signature (signed → honored when all submitted) |
-| `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted when all submitted) |
+| `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted immediately when any participant submits) |
 
 ---
 
@@ -167,7 +174,7 @@ GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%
 
 ## 2. POST /proposes — Create a Propose
 
-The creator creates a new Propose. Sign `proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt`.
+The creator creates a new Propose. Sign `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt`.
 
 ### Request Body
 
@@ -228,7 +235,7 @@ Returns a `ProposeResponse` object (see Data Model above).
 
 ## 4. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed when all done)
 
-A counterparty signs `proposeId + contentHash + signerPublicKey + createdAt`.
+A counterparty signs `"signed." + proposeId + contentHash + signerPublicKey + timestamp`.
 The Propose transitions to `signed` automatically once **all** counterparties have signed.
 
 ### Request Body
@@ -237,7 +244,7 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 {
   "signerPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
   "signature": "MEUC...",
-  "createdAt": "2026-01-01T00:00:00Z"
+  "timestamp": "2026-01-01T00:00:00Z"
 }
 ```
 
@@ -245,14 +252,14 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 |---|---|---|---|
 | `signerPublicKey` | string | ✅ | Signer's public key (must be a registered counterparty) |
 | `signature` | string | ✅ | Signer's signature |
-| `createdAt` | string | ✅ | Must match the Propose's `createdAt` |
+| `timestamp` | string | ✅ | Operation timestamp (ISO8601) |
 
 ### Responses
 
 | Status | Description |
 |---|---|
 | 200 OK | Signed successfully; transitions to `signed` when all counterparties have signed |
-| 400 | `createdAt` mismatch or invalid UUID |
+| 400 | Invalid UUID format |
 | 401 | Signature verification failed |
 | 403 Forbidden | `signerPublicKey` is not a registered counterparty |
 | 404 | Propose not found |
@@ -262,7 +269,7 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 
 ## 5. DELETE /proposes/:id — Dissolve (proposed → dissolved)
 
-The creator or any counterparty signs `"dissolved." + proposeId + contentHash + timestamp` to dissolve. Only allowed from `proposed` state.
+The creator or any counterparty signs `"dissolved." + proposeId + contentHash + publicKey + timestamp` to dissolve. Only allowed from `proposed` state.
 
 ### Request Body
 
@@ -294,7 +301,7 @@ The creator or any counterparty signs `"dissolved." + proposeId + contentHash + 
 
 ## 6. PATCH /proposes/:id/honor — Submit Honor Signature (signed → honored)
 
-Each participant signs `"honored." + proposeId + contentHash + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `honored`.
+Each participant signs `"honored." + proposeId + contentHash + publicKey + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `honored`.
 
 ### Request Body
 
@@ -318,9 +325,9 @@ Each participant signs `"honored." + proposeId + contentHash + timestamp`. Once 
 
 ---
 
-## 7. PATCH /proposes/:id/part — Submit Part Signature (signed → parted)
+## 7. PATCH /proposes/:id/part — Submit Part Signature (signed → parted immediately)
 
-Each participant signs `"parted." + proposeId + contentHash + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `parted`.
+Any participant signs `"parted." + proposeId + contentHash + publicKey + timestamp`. The Propose transitions to `parted` **immediately** when any one participant submits — no need to wait for all participants.
 
 ### Request Body
 
@@ -336,7 +343,7 @@ Each participant signs `"parted." + proposeId + contentHash + timestamp`. Once t
 
 | Status | Description |
 |---|---|
-| 200 OK | Signature recorded; transitions to `parted` when all participants have submitted |
+| 200 OK | Signature recorded; transitions to `parted` immediately |
 | 401 | Signature verification failed |
 | 403 Forbidden | Public key does not belong to a participant |
 | 404 | Propose not found |
@@ -390,7 +397,7 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
   -d "{
     \"signerPublicKey\": $COUNTERPARTY_JWK,
     \"signature\": \"MEUC...\",
-    \"createdAt\": \"2026-01-01T00:00:00Z\"
+    \"timestamp\": \"2026-01-01T00:00:00Z\"
   }"
 ```
 
