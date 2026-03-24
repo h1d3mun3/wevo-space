@@ -140,7 +140,7 @@ To create a Propose, you need the counterparty's public key. Have them send you 
 The following signature message is constructed internally:
 
 ```
-proposeId + SHA256(message) + counterpartyPublicKey + createdAt
+"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt
 ```
 
 - Saved locally to SwiftData
@@ -164,7 +164,7 @@ proposeId + SHA256(message) + counterpartyPublicKey + createdAt
 The following signature message is constructed:
 
 ```
-"signed." + proposeId + SHA256(message) + signerPublicKey + timestamp
+"signed." + proposeId + contentHash + signerPublicKey + timestamp
 ```
 
 After signing, the status becomes `signed`.
@@ -180,11 +180,11 @@ The counterparty can then fetch it from the server.
 
 Once a Propose reaches `signed` status, the following actions are available:
 
-| Action | Meaning | Signature message prefix |
-|--------|---------|--------------------------|
-| **Honor** | Both parties declare the agreement complete | `"honored."` |
-| **Part** | One party exits early | `"part."` |
-| **Dissolve** | Discard the Propose | — |
+| Action | Meaning | Signature message |
+|--------|---------|-------------------|
+| **Honor** | Both parties declare the agreement complete | `"honored." + proposeId + contentHash + publicKey + timestamp` |
+| **Part** | Any party exits early (immediate transition) | `"parted." + proposeId + contentHash + publicKey + timestamp` |
+| **Dissolve** | Discard the Propose (from proposed only) | `"dissolved." + proposeId + contentHash + publicKey + timestamp` |
 
 - Proposes in `honored` or `parted` state move to the Completed tab
 - All state transitions are sent to the wevo-space server

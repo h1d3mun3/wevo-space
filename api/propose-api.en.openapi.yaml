@@ -30,7 +30,7 @@ paths:
         - name: publicKey
           in: query
           required: true
-          description: Public key to search by (Base64 / X.963 format)
+          description: Public key to search by (JWK JSON string, percent-encoded)
           schema:
             type: string
         - name: status
@@ -70,7 +70,7 @@ paths:
       summary: Create a propose
       description: |
         The creator creates a new Propose.
-        Message to sign: `proposeId + contentHash + counterpartyPublicKeys(sorted & joined) + createdAt`
+        Message to sign: `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt`
       tags: [Propose]
       requestBody:
         required: true
@@ -137,7 +137,7 @@ paths:
       summary: Dissolve a propose (proposed → dissolved)
       description: |
         The creator or any counterparty signs to dissolve the Propose. Only allowed from `proposed` state.
-        Message to sign: `"dissolved." + proposeId + contentHash + timestamp`
+        Message to sign: `"dissolved." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -185,7 +185,7 @@ paths:
       description: |
         A registered counterparty signs the Propose. The Propose automatically transitions to `signed`
         once all counterparties have signed.
-        Message to sign: `proposeId + contentHash + signerPublicKey + createdAt`
+        Message to sign: `"signed." + proposeId + contentHash + signerPublicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -198,7 +198,7 @@ paths:
             example:
               signerPublicKey: "BIrH..."
               signature: "MEUC..."
-              createdAt: "2026-01-01T00:00:00Z"
+              timestamp: "2026-01-01T00:00:00Z"
       responses:
         '200':
           description: Signed successfully; transitions to signed when all counterparties have signed
@@ -239,7 +239,7 @@ paths:
       description: |
         Each participant submits a signature. Once the creator and all counterparties have signed,
         the Propose automatically transitions to `honored`.
-        Message to sign: `"honored." + proposeId + contentHash + timestamp`
+        Message to sign: `"honored." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -283,11 +283,11 @@ paths:
 
   /proposes/{id}/part:
     patch:
-      summary: Submit part signature (auto-transitions to parted when all submitted)
+      summary: Submit part signature (transitions to parted immediately when any participant submits)
       description: |
-        Each participant submits a signature. Once the creator and all counterparties have signed,
-        the Propose automatically transitions to `parted`.
-        Message to sign: `"parted." + proposeId + contentHash + timestamp`
+        Any participant submits a signature. The Propose transitions to `parted` immediately
+        when any one participant submits — no need to wait for all participants.
+        Message to sign: `"parted." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -303,7 +303,7 @@ paths:
               timestamp: "2026-01-03T00:00:00Z"
       responses:
         '200':
-          description: Signature recorded; transitions to parted when all participants have submitted
+          description: Signature recorded; transitions to parted immediately
         '401':
           description: Signature verification failed
           content:
@@ -353,7 +353,7 @@ components:
           description: Hash of the content
         creatorPublicKey:
           type: string
-          description: Creator's public key (Base64 / X.963 format)
+          description: Creator's public key (JWK JSON string)
         creatorSignature:
           type: string
           description: Creator's signature (Base64 / DER format)
@@ -366,14 +366,29 @@ components:
           type: string
           nullable: true
           description: Creator's honor signature
+        honorCreatorTimestamp:
+          type: string
+          nullable: true
+          description: Creator's honor timestamp (ISO8601)
         partCreatorSignature:
           type: string
           nullable: true
           description: Creator's part signature
+        partCreatorTimestamp:
+          type: string
+          nullable: true
+          description: Creator's part timestamp (ISO8601)
+        dissolvedAt:
+          type: string
+          nullable: true
+          description: Dissolution timestamp (ISO8601)
         status:
           type: string
           enum: [proposed, signed, honored, dissolved, parted]
           description: Current status
+        signatureVersion:
+          type: integer
+          description: Signature scheme version (current: 1)
         createdAt:
           type: string
           description: Creation timestamp (ISO8601, client-generated)
@@ -388,19 +403,31 @@ components:
       properties:
         publicKey:
           type: string
-          description: Counterparty's public key (Base64 / X.963 format)
+          description: Counterparty's public key (JWK JSON string)
         signSignature:
           type: string
           nullable: true
           description: Signature for /sign (set after signing)
+        signTimestamp:
+          type: string
+          nullable: true
+          description: Timestamp for /sign (ISO8601)
         honorSignature:
           type: string
           nullable: true
           description: Signature for /honor
+        honorTimestamp:
+          type: string
+          nullable: true
+          description: Timestamp for /honor (ISO8601)
         partSignature:
           type: string
           nullable: true
           description: Signature for /part
+        partTimestamp:
+          type: string
+          nullable: true
+          description: Timestamp for /part (ISO8601)
 
     ProposePage:
       type: object
@@ -437,7 +464,7 @@ components:
           description: Hash of the content
         creatorPublicKey:
           type: string
-          description: Creator's public key (Base64 / X.963 format)
+          description: Creator's public key (JWK JSON string)
         creatorSignature:
           type: string
           description: Creator's signature (Base64 / DER format)
@@ -456,17 +483,17 @@ components:
       required:
         - signerPublicKey
         - signature
-        - createdAt
+        - timestamp
       properties:
         signerPublicKey:
           type: string
-          description: Signer's public key (must be a registered counterparty)
+          description: Signer's public key (must be a registered counterparty, JWK JSON string)
         signature:
           type: string
           description: Signer's signature (Base64 / DER format)
-        createdAt:
+        timestamp:
           type: string
-          description: Must match the Propose's createdAt
+          description: Operation timestamp (ISO8601)
 
     TransitionInput:
       type: object
