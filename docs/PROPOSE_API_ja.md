@@ -147,13 +147,20 @@ GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%
         {
           "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
           "signSignature": null,
+          "signTimestamp": null,
           "honorSignature": null,
-          "partSignature": null
+          "honorTimestamp": null,
+          "partSignature": null,
+          "partTimestamp": null
         }
       ],
       "honorCreatorSignature": null,
+      "honorCreatorTimestamp": null,
       "partCreatorSignature": null,
+      "partCreatorTimestamp": null,
+      "dissolvedAt": null,
       "status": "proposed",
+      "signatureVersion": 1,
       "createdAt": "2026-01-01T00:00:00Z",
       "updatedAt": "2026-01-01T00:00:00Z"
     }
@@ -261,7 +268,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 | ステータス | 説明 |
 |---|---|
 | 200 OK | 署名成功。全相手方が揃えば `signed` 状態に遷移 |
-| 400 | 無効なUUID形式 |
+| 400 | 無効なPropose ID |
 | 401 | 署名検証失敗 |
 | 403 Forbidden | `signerPublicKey` が登録済み相手方ではない |
 | 404 | Proposeが見つからない |
@@ -309,7 +316,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ```json
 {
-  "publicKey": "BHqG...",
+  "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "signature": "MEUC...",
   "timestamp": "2026-01-03T00:00:00Z"
 }
@@ -335,7 +342,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ```json
 {
-  "publicKey": "BHqG...",
+  "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "signature": "MEUC...",
   "timestamp": "2026-01-03T00:00:00Z"
 }
@@ -350,6 +357,51 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 | 403 Forbidden | 参加者以外の公開鍵 |
 | 404 | Proposeが見つからない |
 | 409 Conflict | `signed` 状態ではない |
+
+---
+
+## ユーティリティエンドポイント
+
+### GET /health — ヘルスチェック
+
+サーバーの稼働状態を返します。バージョンプレフィックスなし（`/v1` 不要）。
+
+```
+GET /health
+```
+
+**レスポンス (200 OK)**
+
+```json
+{
+  "status": "ok",
+  "timestamp": "1711234567.0"
+}
+```
+
+---
+
+### GET /info — サーバー情報
+
+プロトコル名、バージョン、対応機能を返します。バージョンプレフィックスなし（`/v1` 不要）。
+
+```
+GET /info
+```
+
+**レスポンス (200 OK)**
+
+```json
+{
+  "protocol": "wevo",
+  "version": "0.1.0",
+  "capabilities": [
+    "proposes.create",
+    "proposes.read",
+    "proposes.sign"
+  ]
+}
+```
 
 ---
 

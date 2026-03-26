@@ -145,13 +145,20 @@ GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%
         {
           "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
           "signSignature": null,
+          "signTimestamp": null,
           "honorSignature": null,
-          "partSignature": null
+          "honorTimestamp": null,
+          "partSignature": null,
+          "partTimestamp": null
         }
       ],
       "honorCreatorSignature": null,
+      "honorCreatorTimestamp": null,
       "partCreatorSignature": null,
+      "partCreatorTimestamp": null,
+      "dissolvedAt": null,
       "status": "proposed",
+      "signatureVersion": 1,
       "createdAt": "2026-01-01T00:00:00Z",
       "updatedAt": "2026-01-01T00:00:00Z"
     }
@@ -259,7 +266,7 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 | Status | Description |
 |---|---|
 | 200 OK | Signed successfully; transitions to `signed` when all counterparties have signed |
-| 400 | Invalid UUID format |
+| 400 | Invalid Propose ID |
 | 401 | Signature verification failed |
 | 403 Forbidden | `signerPublicKey` is not a registered counterparty |
 | 404 | Propose not found |
@@ -307,7 +314,7 @@ Each participant signs `"honored." + proposeId + contentHash + publicKey + times
 
 ```json
 {
-  "publicKey": "BHqG...",
+  "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "signature": "MEUC...",
   "timestamp": "2026-01-03T00:00:00Z"
 }
@@ -333,7 +340,7 @@ Any participant signs `"parted." + proposeId + contentHash + publicKey + timesta
 
 ```json
 {
-  "publicKey": "BHqG...",
+  "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
   "signature": "MEUC...",
   "timestamp": "2026-01-03T00:00:00Z"
 }
@@ -348,6 +355,51 @@ Any participant signs `"parted." + proposeId + contentHash + publicKey + timesta
 | 403 Forbidden | Public key does not belong to a participant |
 | 404 | Propose not found |
 | 409 Conflict | Propose is not in `signed` state |
+
+---
+
+## Utility Endpoints
+
+### GET /health — Health Check
+
+Returns the server's operational status. Not versioned (no `/v1` prefix).
+
+```
+GET /health
+```
+
+**Response (200 OK)**
+
+```json
+{
+  "status": "ok",
+  "timestamp": "1711234567.0"
+}
+```
+
+---
+
+### GET /info — Server Info
+
+Returns the protocol name, version, and supported capabilities. Not versioned (no `/v1` prefix).
+
+```
+GET /info
+```
+
+**Response (200 OK)**
+
+```json
+{
+  "protocol": "wevo",
+  "version": "0.1.0",
+  "capabilities": [
+    "proposes.create",
+    "proposes.read",
+    "proposes.sign"
+  ]
+}
+```
 
 ---
 
