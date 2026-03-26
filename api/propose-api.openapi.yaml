@@ -17,6 +17,8 @@ servers:
 tags:
   - name: Propose
     description: Proposeの作成・取得・状態遷移
+  - name: Utility
+    description: ヘルスチェック・サーバー情報
 
 paths:
   /proposes:
@@ -202,7 +204,7 @@ paths:
         '200':
           description: 署名成功。全相手方が揃えばsignedに遷移
         '400':
-          description: 無効なUUID形式
+          description: 無効なPropose ID
           content:
             application/json:
               schema:
@@ -325,6 +327,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+/health:
+    get:
+      summary: ヘルスチェック
+      description: サーバーの稼働状態を返します。`/v1` プレフィックスは不要です。
+      tags: [Utility]
+      responses:
+        '200':
+          description: サーバー正常稼働中
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    example: "1711234567.0"
+
+  /info:
+    get:
+      summary: サーバー情報
+      description: プロトコル名、バージョン、対応機能を返します。`/v1` プレフィックスは不要です。
+      tags: [Utility]
+      responses:
+        '200':
+          description: サーバー情報
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
 
 components:
   parameters:
@@ -508,6 +543,21 @@ components:
         timestamp:
           type: string
           description: 操作日時（ISO8601）
+
+    InfoResponse:
+      type: object
+      properties:
+        protocol:
+          type: string
+          example: wevo
+        version:
+          type: string
+          example: 0.1.0
+        capabilities:
+          type: array
+          items:
+            type: string
+          example: [proposes.create, proposes.read, proposes.sign]
 
     ErrorResponse:
       type: object

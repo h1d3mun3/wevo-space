@@ -375,12 +375,11 @@ docker-compose logs -f app
 
 ### Health Check Endpoint
 
-Add to `routes.swift`:
+The `/health` endpoint is already implemented in `routes.swift` and returns the server status and current timestamp:
 
-```swift
-app.get("health") { req async in
-    return ["status": "ok"]
-}
+```
+GET /health
+→ {"status": "ok", "timestamp": "1711234567.0"}
 ```
 
 ### Log Monitoring
