@@ -1,5 +1,7 @@
 # WevoSpace
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 WevoSpace is the server-side component of the Wevo approach: a minimal API for storing, synchronizing, and verifying cryptographically signed proposals between parties.
 
 It is not the source of truth. The signatures are.
