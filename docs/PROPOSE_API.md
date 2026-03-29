@@ -77,9 +77,6 @@ dissolved                               parted
 {"crv":"P-256","kty":"EC","x":"IrH3k5a8Q2mXvP1nQ7rAbCdEfGhIjKlMnOpQrSt","y":"UvWxYzAaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"}
 ```
 
-> **Note for GET requests**: When passing a public key as a URL query parameter, percent-encode the full JWK string (e.g. using `encodeURIComponent`).
-
-
 ### Message to Sign
 
 The string to sign for each operation is formed by concatenating the following fields (no separator):
@@ -102,7 +99,6 @@ The string to sign for each operation is formed by concatenating the following f
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/proposes` | List proposes |
 | `POST` | `/proposes` | Create a propose |
 | `GET` | `/proposes/:id` | Get propose details |
 | `PATCH` | `/proposes/:id/sign` | A counterparty signs (auto-transitions to `signed` when all have signed) |
@@ -112,74 +108,7 @@ The string to sign for each operation is formed by concatenating the following f
 
 ---
 
-## 1. GET /proposes — List Proposes
-
-Returns proposes where the specified public key is either the creator or one of the counterparties.
-
-### Query Parameters
-
-| Parameter | Required | Description |
-|---|---|---|
-| `publicKey` | ✅ | Public key to search by (JWK, percent-encoded) |
-| `status` | ✗ | Filter by status (comma-separated for multiple) |
-| `page` | ✗ | Page number (default: 1) |
-| `per` | ✗ | Items per page (default: 10) |
-
-### Request Example
-
-```
-GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%22x%22%3A%22IrH3...%22%2C%22y%22%3A%22UvWx...%22%7D&status=proposed,signed
-```
-
-### Response (200 OK)
-
-```json
-{
-  "items": [
-    {
-      "id": "550E8400-E29B-41D4-A716-446655440000",
-      "contentHash": "abc123def456",
-      "creatorPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
-      "creatorSignature": "MEUC...",
-      "counterparties": [
-        {
-          "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
-          "signSignature": null,
-          "signTimestamp": null,
-          "honorSignature": null,
-          "honorTimestamp": null,
-          "partSignature": null,
-          "partTimestamp": null
-        }
-      ],
-      "honorCreatorSignature": null,
-      "honorCreatorTimestamp": null,
-      "partCreatorSignature": null,
-      "partCreatorTimestamp": null,
-      "dissolvedAt": null,
-      "status": "proposed",
-      "signatureVersion": 1,
-      "createdAt": "2026-01-01T00:00:00Z",
-      "updatedAt": "2026-01-01T00:00:00Z"
-    }
-  ],
-  "metadata": {
-    "page": 1,
-    "per": 10,
-    "total": 1
-  }
-}
-```
-
-### Errors
-
-| Status | Reason |
-|---|---|
-| 400 | `publicKey` is missing |
-
----
-
-## 2. POST /proposes — Create a Propose
+## 1. POST /proposes — Create a Propose
 
 The creator creates a new Propose. Sign `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt`.
 
@@ -219,7 +148,7 @@ The creator creates a new Propose. Sign `"proposed." + proposeId + contentHash +
 
 ---
 
-## 3. GET /proposes/:id — Get Propose Details
+## 2. GET /proposes/:id — Get Propose Details
 
 ### Request Example
 
@@ -240,7 +169,7 @@ Returns a `ProposeResponse` object (see Data Model above).
 
 ---
 
-## 4. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed when all done)
+## 3. PATCH /proposes/:id/sign — Counterparty Signs (proposed → signed when all done)
 
 A counterparty signs `"signed." + proposeId + contentHash + signerPublicKey + timestamp`.
 The Propose transitions to `signed` automatically once **all** counterparties have signed.
@@ -274,7 +203,7 @@ The Propose transitions to `signed` automatically once **all** counterparties ha
 
 ---
 
-## 5. DELETE /proposes/:id — Dissolve (proposed → dissolved)
+## 4. DELETE /proposes/:id — Dissolve (proposed → dissolved)
 
 The creator or any counterparty signs `"dissolved." + proposeId + contentHash + publicKey + timestamp` to dissolve. Only allowed from `proposed` state.
 
@@ -306,7 +235,7 @@ The creator or any counterparty signs `"dissolved." + proposeId + contentHash + 
 
 ---
 
-## 6. PATCH /proposes/:id/honor — Submit Honor Signature (signed → honored)
+## 5. PATCH /proposes/:id/honor — Submit Honor Signature (signed → honored)
 
 Each participant signs `"honored." + proposeId + contentHash + publicKey + timestamp`. Once the creator and **all** counterparties have submitted, the Propose automatically transitions to `honored`.
 
@@ -332,7 +261,7 @@ Each participant signs `"honored." + proposeId + contentHash + publicKey + times
 
 ---
 
-## 7. PATCH /proposes/:id/part — Submit Part Signature (signed → parted immediately)
+## 6. PATCH /proposes/:id/part — Submit Part Signature (signed → parted immediately)
 
 Any participant signs `"parted." + proposeId + contentHash + publicKey + timestamp`. The Propose transitions to `parted` **immediately** when any one participant submits — no need to wait for all participants.
 
