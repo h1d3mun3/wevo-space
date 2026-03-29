@@ -20,7 +20,6 @@
 
 | メソッド | パス | 説明 |
 |---|---|---|
-| `GET` | `/v1/proposes` | Propose一覧（publicKey・statusで絞り込み） |
 | `POST` | `/v1/proposes` | Propose作成 |
 | `GET` | `/v1/proposes/:id` | Propose詳細取得 |
 | `PATCH` | `/v1/proposes/:id/sign` | 相手方署名（proposed → signed） |

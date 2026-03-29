@@ -79,7 +79,6 @@ All endpoints are prefixed with `/v1`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/proposes` | List proposes (filter by `publicKey`, `status`) |
 | `POST` | `/v1/proposes` | Create a propose |
 | `GET` | `/v1/proposes/:id` | Get propose details |
 | `PATCH` | `/v1/proposes/:id/sign` | Counterparty signs (`proposed → signed`) |

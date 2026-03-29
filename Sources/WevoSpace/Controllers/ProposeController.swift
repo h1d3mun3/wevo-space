@@ -61,54 +61,12 @@ struct ProposeResponse: Content {
 struct ProposeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let proposes = routes.grouped("proposes")
-        proposes.get(use: list)
         proposes.post(use: create)
         proposes.get(":proposeID", use: getOne)
         proposes.patch(":proposeID", "sign", use: sign)
         proposes.delete(":proposeID", use: dissolve)
         proposes.patch(":proposeID", "honor", use: honor)
         proposes.patch(":proposeID", "part", use: part)
-    }
-
-    // GET /v1/proposes?publicKey=...&status=proposed,signed
-    func list(req: Request) async throws -> Page<ProposeResponse> {
-        guard let publicKey = req.query[String.self, at: "publicKey"] else {
-            throw Abort(.badRequest, reason: "publicKey is required")
-        }
-
-        // Find propose IDs where publicKey is registered as a counterparty
-        let counterpartyProposeIDs = try await ProposeCounterparty.query(on: req.db)
-            .filter(\.$publicKey == publicKey)
-            .all()
-            .map { $0.$propose.id }
-
-        var query = Propose.query(on: req.db).with(\.$counterparties)
-
-        if counterpartyProposeIDs.isEmpty {
-            query = query.filter(\.$creatorPublicKey == publicKey)
-        } else {
-            query = query.group(.or) { group in
-                group.filter(\.$creatorPublicKey == publicKey)
-                group.filter(\.$id ~~ counterpartyProposeIDs)
-            }
-        }
-
-        if let statusParam = req.query[String.self, at: "status"] {
-            let statuses = statusParam
-                .split(separator: ",")
-                .map { String($0) }
-                .filter { ProposeStatus(rawValue: $0) != nil }
-            if !statuses.isEmpty {
-                query = query.filter(\.$status ~~ statuses)
-            }
-        }
-
-        let page = try await query
-            .sort(\.$updatedAt, .descending)
-            .paginate(for: req)
-
-        let items = try page.items.map { try ProposeResponse(from: $0) }
-        return Page(items: items, metadata: page.metadata)
     }
 
     // POST /v1/proposes

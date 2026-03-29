@@ -79,9 +79,6 @@ dissolved                      parted
 {"crv":"P-256","kty":"EC","x":"IrH3k5a8Q2mXvP1nQ7rAbCdEfGhIjKlMnOpQrSt","y":"UvWxYzAaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"}
 ```
 
-> **GETリクエスト時の注意**: 公開鍵をURLクエリパラメータとして渡す場合は、JWK文字列全体をパーセントエンコードしてください（例: `encodeURIComponent` を使用）。
-
-
 ### 署名対象の文字列
 
 各操作で署名する文字列は以下の通りです。フィールドは連結のみ（区切り文字なし）。
@@ -104,7 +101,6 @@ dissolved                      parted
 
 | メソッド | パス | 説明 |
 |---|---|---|
-| `GET` | `/proposes` | Propose一覧取得 |
 | `POST` | `/proposes` | Propose作成 |
 | `GET` | `/proposes/:id` | Propose詳細取得 |
 | `PATCH` | `/proposes/:id/sign` | 相手方が署名（全員揃うと `signed` に自動遷移） |
@@ -114,74 +110,7 @@ dissolved                      parted
 
 ---
 
-## 1. GET /proposes — Propose一覧取得
-
-指定した公開鍵が creator または いずれかの counterparty であるProposeを返します。
-
-### クエリパラメータ
-
-| パラメータ | 必須 | 説明 |
-|---|---|---|
-| `publicKey` | ✅ | 検索する公開鍵（JWK、パーセントエンコード済み） |
-| `status` | ✗ | 絞り込むステータス（カンマ区切りで複数指定可） |
-| `page` | ✗ | ページ番号（デフォルト: 1） |
-| `per` | ✗ | 1ページあたりの件数（デフォルト: 10） |
-
-### リクエスト例
-
-```
-GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%22x%22%3A%22IrH3...%22%2C%22y%22%3A%22UvWx...%22%7D&status=proposed,signed
-```
-
-### レスポンス (200 OK)
-
-```json
-{
-  "items": [
-    {
-      "id": "550E8400-E29B-41D4-A716-446655440000",
-      "contentHash": "abc123def456",
-      "creatorPublicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"IrH3...\",\"y\":\"UvWx...\"}",
-      "creatorSignature": "MEUC...",
-      "counterparties": [
-        {
-          "publicKey": "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"AbCd...\",\"y\":\"EfGh...\"}",
-          "signSignature": null,
-          "signTimestamp": null,
-          "honorSignature": null,
-          "honorTimestamp": null,
-          "partSignature": null,
-          "partTimestamp": null
-        }
-      ],
-      "honorCreatorSignature": null,
-      "honorCreatorTimestamp": null,
-      "partCreatorSignature": null,
-      "partCreatorTimestamp": null,
-      "dissolvedAt": null,
-      "status": "proposed",
-      "signatureVersion": 1,
-      "createdAt": "2026-01-01T00:00:00Z",
-      "updatedAt": "2026-01-01T00:00:00Z"
-    }
-  ],
-  "metadata": {
-    "page": 1,
-    "per": 10,
-    "total": 1
-  }
-}
-```
-
-### エラー
-
-| ステータス | 理由 |
-|---|---|
-| 400 | `publicKey` が未指定 |
-
----
-
-## 2. POST /proposes — Propose作成
+## 1. POST /proposes — Propose作成
 
 作成者が新しいProposeを作成します。`"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys（ソート&結合） + createdAt` に署名します。
 
@@ -221,7 +150,7 @@ GET /v1/proposes?publicKey=%7B%22crv%22%3A%22P-256%22%2C%22kty%22%3A%22EC%22%2C%
 
 ---
 
-## 3. GET /proposes/:id — Propose詳細取得
+## 2. GET /proposes/:id — Propose詳細取得
 
 ### リクエスト例
 
@@ -242,7 +171,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ---
 
-## 4. PATCH /proposes/:id/sign — 相手方署名（proposed → 全員署名でsigned）
+## 3. PATCH /proposes/:id/sign — 相手方署名（proposed → 全員署名でsigned）
 
 相手方が `"signed." + proposeId + contentHash + signerPublicKey + timestamp` に署名します。
 **全ての** 相手方が署名した時点で `signed` 状態に自動遷移します。
@@ -276,7 +205,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ---
 
-## 5. DELETE /proposes/:id — 解消（proposed → dissolved）
+## 4. DELETE /proposes/:id — 解消（proposed → dissolved）
 
 作成者またはいずれかの相手方が `"dissolved." + proposeId + contentHash + publicKey + timestamp` に署名して解消します。`proposed` 状態のみ可。
 
@@ -308,7 +237,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ---
 
-## 6. PATCH /proposes/:id/honor — Honor署名（signed → 全員で honored）
+## 5. PATCH /proposes/:id/honor — Honor署名（signed → 全員で honored）
 
 `"honored." + proposeId + contentHash + publicKey + timestamp` に署名します。作成者と**全ての**相手方が揃った時点で `honored` 状態に自動遷移します。
 
@@ -334,7 +263,7 @@ GET /v1/proposes/550E8400-E29B-41D4-A716-446655440000
 
 ---
 
-## 7. PATCH /proposes/:id/part — Part署名（signed → いずれか1人で即座にparted）
+## 6. PATCH /proposes/:id/part — Part署名（signed → いずれか1人で即座にparted）
 
 `"parted." + proposeId + contentHash + publicKey + timestamp` に署名します。**いずれかの参加者が送った時点で即座に** `parted` 状態に遷移します。全員分を待ちません。
 
