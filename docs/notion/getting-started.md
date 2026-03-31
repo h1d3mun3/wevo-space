@@ -1,7 +1,7 @@
 # wevo Getting Started
 
 wevo is an iOS app that uses P256 ECDSA signatures to prove "who agreed to what."
-Signing happens entirely on-device using the Keychain. The server (wevo-space) is an optional sync layer.
+Signing happens entirely on-device using the Keychain. A wevo-space server is required for proposal storage and multi-party synchronization.
 
 > **Audience:** This is a TestFlight beta document for iOS engineers.
 
@@ -71,7 +71,7 @@ The name reflects the idea: **W**eb of **E**ndorsed **V**erifiable **O**aths. No
 
 - **wevo (this app):** The client. Handles signature generation, verification, and local storage.
 - **wevo-space:** A Vapor backend server. Stores signed hashes and mediates sync between devices.
-- **Local-first design:** All signing operations work offline. Server communication is best-effort.
+- **wevo-space integration:** Signing happens on-device. Signed data is sent to the wevo-space server after each operation.
 
 ---
 
@@ -100,8 +100,6 @@ A Space is a container for Proposes. Create one per project or relationship.
 3. Enter your wevo-space server URL (e.g. `https://your-server.example.com`)
 4. Select a default Identity for quick signing (can be changed later)
 5. Tap **Add**
-
-> **About the URL:** The app works locally without a URL. Leave it blank if you don't need server sync.
 
 ---
 
@@ -169,7 +167,7 @@ The following signature message is constructed:
 
 After signing, the status becomes `signed`.
 
-**Send the signature to the server (optional):**
+**Send the signature to the server:**
 
 Tap **Sync to Server** after signing to send your signature to wevo-space.
 The counterparty can then fetch it from the server.
