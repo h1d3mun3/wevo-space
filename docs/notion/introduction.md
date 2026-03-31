@@ -44,7 +44,7 @@ The name encodes the idea: **W**eb of **E**ndorsed **V**erifiable **O**aths. Not
 This beta is for people who will appreciate what's happening under the hood.
 
 - **Keychain + CryptoKit** used for something beyond "sign in with biometrics" — each Identity is a `P256.Signing.PrivateKey` used to attest real-world commitments
-- **Local-first architecture** — full functionality offline; server sync is best-effort, not a dependency
+- **On-device signing** — signatures are generated and verified locally via CryptoKit; signed data is sent to the wevo-space server
 - **SwiftData + iCloud** as the persistence layer, with a custom file-based exchange protocol (`.wevo-propose`, `.wevo-contact`, `.wevo-identity`)
 - **AirDrop as a trust ceremony** — sharing a public key fingerprint in person, then verifying it out-of-band before signing
 - **Clean Architecture** — UseCase/Repository separation throughout; the backend (wevo-space) is a Vapor app small enough to read in an afternoon
@@ -64,7 +64,7 @@ What's useful to hear from beta testers:
 - Does the mental model click? Or does something feel off?
 - After getting past the setup, is the signing flow intuitive?
 - What feels unnecessary? What feels missing?
-- Is "privacy-first, server-as-optional-sync" a meaningful distinction in practice?
+- Is the privacy-first design (message body never leaves the device) a meaningful distinction in practice?
 
 ---
 
