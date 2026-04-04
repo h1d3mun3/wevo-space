@@ -15,6 +15,8 @@ struct ProposeResponse: Content {
     let partCreatorSignature: String?
     let partCreatorTimestamp: String?
     let dissolvedAt: String?
+    let dissolveSignature: String?
+    let dissolvePublicKey: String?
     let status: String
     let signatureVersion: Int
     let createdAt: String
@@ -51,6 +53,8 @@ struct ProposeResponse: Content {
         self.partCreatorSignature = propose.partCreatorSignature
         self.partCreatorTimestamp = propose.partCreatorTimestamp
         self.dissolvedAt = propose.dissolvedAt
+        self.dissolveSignature = propose.dissolveSignature
+        self.dissolvePublicKey = propose.dissolvePublicKey
         self.status = propose.status
         self.signatureVersion = propose.signatureVersion
         self.createdAt = propose.createdAt
@@ -198,6 +202,8 @@ struct ProposeController: RouteCollection {
 
         propose.proposeStatus = .dissolved
         propose.dissolvedAt = input.timestamp
+        propose.dissolveSignature = input.signature
+        propose.dissolvePublicKey = input.publicKey
         try await propose.save(on: req.db)
 
         return .ok

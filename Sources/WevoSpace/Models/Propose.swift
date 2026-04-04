@@ -37,6 +37,13 @@ final class Propose: Model, @unchecked Sendable {
     @OptionalField(key: "dissolved_at")
     var dissolvedAt: String?
 
+    // Dissolve signature and the public key of the participant who dissolved
+    @OptionalField(key: "dissolve_signature")
+    var dissolveSignature: String?
+
+    @OptionalField(key: "dissolve_public_key")
+    var dissolvePublicKey: String?
+
     @OptionalField(key: "honor_creator_timestamp")
     var honorCreatorTimestamp: String?
 
