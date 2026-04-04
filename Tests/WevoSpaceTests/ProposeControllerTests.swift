@@ -35,6 +35,7 @@ struct ProposeControllerTests {
             app.migrations.add(CreateCounterpartiesTable())
             app.migrations.add(AddSignatureVersionAndResetProposes())
             app.migrations.add(AddDissolveSignatureToPropose())
+            app.migrations.add(AddPerPartyDissolveSignatures())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
@@ -570,6 +571,70 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("Same party re-sending dissolve signature returns 200 (idempotent)")
+    func dissolveSamePartyResendReturnsOk() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, _) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-02T00:00:00Z"
+            let message = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let sig = try creator.sign(message)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: sig, timestamp: timestamp)
+
+            // First dissolve → transitions to dissolved
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            // Same party resends → 200 (idempotent)
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("Second party can also submit their dissolve signature after state is dissolved")
+    func dissolveBothPartiesRecordSignatures() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
+
+            let timestamp = "2026-01-02T00:00:00Z"
+
+            // Creator dissolves first → transitions to dissolved, creator signature recorded
+            let creatorMessage = "dissolved." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let creatorSig = try creator.sign(creatorMessage)
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .dissolved)
+                #expect(propose?.creatorDissolveSignature == creatorSig)
+            })
+
+            // Counterparty also submits their dissolve signature → 200, signature recorded
+            let cpTimestamp = "2026-01-02T01:00:00Z"
+            let cpMessage = "dissolved." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + cpTimestamp
+            let cpSig = try counterparty.sign(cpMessage)
+            try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: cpSig, timestamp: cpTimestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let cp = try await ProposeCounterparty.query(on: app.db)
+                    .filter(\.$publicKey == counterparty.publicKeyBase64)
+                    .first()
+                #expect(cp?.dissolveSignature == cpSig)
+                // Status unchanged
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .dissolved)
+            })
+        }
+    }
+
     @Test("A Propose in signed state cannot be dissolved")
     func dissolveSignedProposeReturnsConflict() async throws {
         try await withApp { app in
@@ -862,8 +927,8 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("A second part request after already parted returns 409")
-    func partAlreadyPartedReturnsConflict() async throws {
+    @Test("Same party re-sending part signature returns 200 (idempotent)")
+    func partSamePartyResendReturnsOk() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
 
@@ -891,11 +956,58 @@ struct ProposeControllerTests {
                 #expect(propose?.proposeStatus == .parted)
             })
 
-            // Second part → 409 conflict (already parted)
+            // Same party resends → 200 (idempotent, no change)
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .conflict)
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("Second party can also submit their part signature after state is parted")
+    func partBothPartiesRecordSignatures() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
+            let counterpartySig = try counterparty.sign(signMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+
+            let timestamp = "2026-01-03T00:00:00Z"
+
+            // Creator parts first → immediately parted
+            let creatorPartMessage = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let creatorPartSig = try creator.sign(creatorPartMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: creatorPartSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .parted)
+                #expect(propose?.partCreatorSignature == creatorPartSig)
+            })
+
+            // Counterparty also submits their part signature → 200, signature recorded
+            let cpPartMessage = "parted." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
+            let cpPartSig = try counterparty.sign(cpPartMessage)
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: counterparty.publicKeyBase64, signature: cpPartSig, timestamp: timestamp))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let cp = try await ProposeCounterparty.query(on: app.db)
+                    .filter(\.$publicKey == counterparty.publicKeyBase64)
+                    .first()
+                #expect(cp?.partSignature == cpPartSig)
+                // Status unchanged
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .parted)
             })
         }
     }

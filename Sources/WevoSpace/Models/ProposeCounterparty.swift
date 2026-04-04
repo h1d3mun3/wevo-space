@@ -27,6 +27,10 @@ final class ProposeCounterparty: Model, Content, @unchecked Sendable {
     @OptionalField(key: "part_signature")
     var partSignature: String?
 
+    // Signature and timestamp for /dissolve (counterparty's dissolve)
+    @OptionalField(key: "dissolve_signature")
+    var dissolveSignature: String?
+
     // Timestamps for each transition (ISO8601, client-generated and signed)
     @OptionalField(key: "sign_timestamp")
     var signTimestamp: String?
@@ -36,6 +40,9 @@ final class ProposeCounterparty: Model, Content, @unchecked Sendable {
 
     @OptionalField(key: "part_timestamp")
     var partTimestamp: String?
+
+    @OptionalField(key: "dissolve_timestamp")
+    var dissolveTimestamp: String?
 
     init() { }
 
