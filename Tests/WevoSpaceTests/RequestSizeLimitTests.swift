@@ -34,6 +34,7 @@ struct RequestSizeLimitTests {
             app.migrations.add(CreateProposesTable())
             app.migrations.add(CreateCounterpartiesTable())
             app.migrations.add(AddSignatureVersionAndResetProposes())
+            app.migrations.add(AddDissolveSignatureToPropose())
             try await app.autoMigrate()
             try routes(app)
             try await test(app)
