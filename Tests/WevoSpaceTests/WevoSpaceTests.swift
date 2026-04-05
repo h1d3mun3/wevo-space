@@ -38,7 +38,7 @@ struct WevoSpaceTests {
                 #expect(res.status == .ok)
                 let body = try? res.content.decode(InfoResponse.self)
                 #expect(body?.protocolName == "wevo")
-                #expect(body?.version == "0.1.0")
+                #expect(body?.version == "0.2.0")
             })
         }
     }
