@@ -371,6 +371,126 @@ docker-compose logs -f app
 
 ---
 
+## マルチノード構築（高可用性）
+
+デフォルトでは WevoSpace はシングルノードで動作します。マルチノードモードはオプトインで、`PEER_NODES` を設定すると各ノードが定期的にピアから Pull してマージします。署名は append-only であるため競合は発生しません。
+
+### 環境変数
+
+| 変数 | 説明 | デフォルト |
+|---|---|---|
+| `PEER_NODES` | ピアノード URL のカンマ区切りリスト | *(未設定 — シングルノード)* |
+| `SYNC_SECRET` | ノード間認証用の共有 Bearer トークン | *(未設定 — 認証なし)* |
+| `SYNC_INTERVAL_SECONDS` | Pull 間隔（秒） | `60` |
+
+### 2ノード docker-compose 例
+
+```yaml
+version: '3.8'
+
+services:
+  node-a:
+    build: .
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://vapor:password@postgres-a:5432/wevospace
+      ENVIRONMENT: production
+      PEER_NODES: "http://node-b:8080"
+      SYNC_SECRET: "強力なシークレットに変更してください"
+      SYNC_INTERVAL_SECONDS: "60"
+    depends_on:
+      - postgres-a
+
+  node-b:
+    build: .
+    restart: always
+    ports:
+      - "8081:8080"
+    environment:
+      DATABASE_URL: postgres://vapor:password@postgres-b:5432/wevospace
+      ENVIRONMENT: production
+      PEER_NODES: "http://node-a:8080"
+      SYNC_SECRET: "強力なシークレットに変更してください"
+      SYNC_INTERVAL_SECONDS: "60"
+    depends_on:
+      - postgres-b
+
+  postgres-a:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: vapor
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: wevospace
+    volumes:
+      - postgres_a_data:/var/lib/postgresql/data
+
+  postgres-b:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: vapor
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: wevospace
+    volumes:
+      - postgres_b_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_a_data:
+  postgres_b_data:
+```
+
+各ノードは独自の PostgreSQL インスタンスを持ちます。起動前に各ノードでマイグレーションを実行してください：
+
+```bash
+docker-compose run --rm node-a ./WevoSpace migrate --env production
+docker-compose run --rm node-b ./WevoSpace migrate --env production
+docker-compose up -d
+```
+
+### 3台目のノードを追加する
+
+既存の node-a / node-b 構成に node-c を追加する場合：
+
+1. **既存ノードの `PEER_NODES` を更新**して node-c を追加：
+
+```bash
+# node-a: PEER_NODES=http://node-b:8080,http://node-c:8080
+# node-b: PEER_NODES=http://node-a:8080,http://node-c:8080
+```
+
+2. **node-c を起動**し、既存ノードをピアとして指定：
+
+```bash
+# node-c: PEER_NODES=http://node-a:8080,http://node-b:8080
+```
+
+3. 初回起動時に node-c は全ピアからフル Pull を行い、自動的に追いつきます。手動のデータ移行は不要です。
+
+### `/info` によるピア探索
+
+クライアントは任意のノードの `GET /info` を呼び出してピアノード一覧を取得できます：
+
+```json
+{
+  "protocol": "wevo",
+  "version": "0.2.0",
+  "peers": ["https://node-b.example.com", "https://node-c.example.com"]
+}
+```
+
+Wevo iOS/macOS クライアントはこの情報を使って Space 登録時に全ノードを自動的に発見し、プライマリが利用不能な場合にバックアップノードへ透過的にフェイルオーバーします。
+
+### マルチノード運用時のセキュリティ
+
+- `SYNC_SECRET` には全ノードで共有する強力なランダム値を設定してください。未設定の場合、sync エンドポイントに到達できる任意のホストが Propose を読み書きできます。
+- ファイアウォールまたはリバースプロキシで `/v1/sync/` へのアクセスをピアノードのみに制限してください（公開インターネットからのアクセスを遮断）。
+- 本番環境ではノード間通信に HTTPS を使用してください。
+
+---
+
 ## 監視とメンテナンス
 
 ### ヘルスチェックエンドポイント
@@ -467,6 +587,7 @@ SELECT pg_reload_conf();
 絶対に公開しないこと：
 - `DATABASE_PASSWORD`
 - `DATABASE_URL`
+- `SYNC_SECRET`（ノード間認証トークン）
 - その他の機密情報
 
 ---
