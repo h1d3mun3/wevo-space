@@ -8,11 +8,22 @@ actor SyncService {
     let peers: [String]
     let syncSecret: String?
     private var lastSyncAt: [String: Date] = [:]
+    private let peerClient: any SyncPeerFetching
+    private let pageSize = 500
 
     init(app: Application, peers: [String], syncSecret: String?) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
+        self.peerClient = VaporSyncPeerClient(app: app, syncSecret: syncSecret)
+    }
+
+    /// Initializer for testing: accepts an injected SyncPeerFetching implementation.
+    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching) {
+        self.app = app
+        self.peers = peers
+        self.syncSecret = syncSecret
+        self.peerClient = peerClient
     }
 
     func pullFromAllPeers() async {
@@ -20,8 +31,6 @@ actor SyncService {
             await pullFromPeer(peer)
         }
     }
-
-    private let pageSize = 500
 
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
@@ -33,7 +42,12 @@ actor SyncService {
 
         do {
             while true {
-                let page = try await fetchProposes(from: peerURL, after: after, offset: offset)
+                let page = try await peerClient.fetchProposes(
+                    from: peerURL,
+                    after: after,
+                    limit: pageSize,
+                    offset: offset
+                )
                 for propose in page {
                     try await SyncService.upsertPropose(propose, on: app.db)
                 }
@@ -52,32 +66,6 @@ actor SyncService {
             // Unreachable peers are silently skipped; they will be retried next cycle
             app.logger.warning("[Sync] \(peerURL) skipped: \(error.localizedDescription)")
         }
-    }
-
-    private func fetchProposes(from peerURL: String, after: Date?, offset: Int) async throws -> [ProposeResponse] {
-        var components = URLComponents(string: "\(peerURL)/v1/sync/proposes")!
-        var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "limit", value: "\(pageSize)"),
-            URLQueryItem(name: "offset", value: "\(offset)")
-        ]
-        if let after {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime]
-            queryItems.append(URLQueryItem(name: "after", value: formatter.string(from: after)))
-        }
-        components.queryItems = queryItems
-        let urlString = components.url!.absoluteString
-
-        var headers = HTTPHeaders()
-        if let secret = syncSecret {
-            headers.bearerAuthorization = BearerAuthorization(token: secret)
-        }
-
-        let response = try await app.client.get(URI(string: urlString), headers: headers)
-        guard response.status == .ok else {
-            throw Abort(.serviceUnavailable, reason: "Peer \(peerURL) returned \(response.status)")
-        }
-        return try response.content.decode([ProposeResponse].self)
     }
 
     // MARK: - Merge (static: no actor isolation needed, safe to call from anywhere)
