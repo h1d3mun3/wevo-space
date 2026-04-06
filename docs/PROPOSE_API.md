@@ -105,6 +105,10 @@ The string to sign for each operation is formed by concatenating the following f
 | `DELETE` | `/proposes/:id` | Dissolve (proposed → dissolved) |
 | `PATCH` | `/proposes/:id/honor` | Submit honor signature (signed → honored when all submitted) |
 | `PATCH` | `/proposes/:id/part` | Submit part signature (signed → parted immediately when any participant submits) |
+| `GET` | `/health` | Health check |
+| `GET` | `/info` | Server info and peer node list |
+| `GET` | `/v1/sync/proposes` | Pull proposes updated after a given timestamp (inter-node sync) |
+| `POST` | `/v1/sync/proposes/batch` | Push a batch of proposes to merge (inter-node sync) |
 
 ---
 
@@ -310,7 +314,7 @@ GET /health
 
 ### GET /info — Server Info
 
-Returns the protocol name, version, and supported capabilities. Not versioned (no `/v1` prefix).
+Returns the protocol name, server version, and the URLs of known peer nodes in the cluster. Not versioned (no `/v1` prefix).
 
 ```
 GET /info
@@ -321,14 +325,75 @@ GET /info
 ```json
 {
   "protocol": "wevo",
-  "version": "0.1.0",
-  "capabilities": [
-    "proposes.create",
-    "proposes.read",
-    "proposes.sign"
-  ]
+  "version": "0.2.0",
+  "peers": ["https://node-b.example.com", "https://node-c.example.com"]
 }
 ```
+
+`peers` is an empty array on single-node deployments.
+
+---
+
+## Inter-Node Sync Endpoints
+
+These endpoints are used exclusively for node-to-node synchronization in multi-node deployments. They are not intended to be called by end-user clients.
+
+Authentication: `Authorization: Bearer <SYNC_SECRET>` (required when `SYNC_SECRET` is set on the server).
+
+### GET /v1/sync/proposes — Pull Updated Proposes
+
+Returns all proposes whose `updatedAt` is after the given timestamp. Used by peer nodes to pull incremental updates.
+
+**Query Parameters**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `after` | string | ✅ | ISO8601 timestamp; returns proposes updated after this time |
+
+**Request Example**
+
+```
+GET /v1/sync/proposes?after=2026-01-01T00:00:00Z
+Authorization: Bearer <SYNC_SECRET>
+```
+
+**Response (200 OK)**
+
+```json
+[
+  { /* ProposeResponse */ },
+  { /* ProposeResponse */ }
+]
+```
+
+| Status | Description |
+|---|---|
+| 200 OK | Array of ProposeResponse objects (may be empty) |
+| 400 | Missing or invalid `after` parameter |
+| 401 | Missing or invalid `Authorization` header (when `SYNC_SECRET` is set) |
+
+---
+
+### POST /v1/sync/proposes/batch — Push Propose Batch
+
+Accepts an array of proposes and merges them into the local database. Each propose is upserted: existing fields are never overwritten with null, and signature fields are only written if currently null (append-only merge).
+
+**Request Body**
+
+```json
+[
+  { /* ProposeResponse */ },
+  { /* ProposeResponse */ }
+]
+```
+
+**Response**
+
+| Status | Description |
+|---|---|
+| 200 OK | Batch accepted and merged |
+| 400 | Invalid request body |
+| 401 | Missing or invalid `Authorization` header (when `SYNC_SECRET` is set) |
 
 ---
 
@@ -414,5 +479,5 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
 
 ## Version
 
-API Version: 1.0.0
-Last updated: 2026-03-19
+API Version: 1.0.0 (WevoSpace server version: 0.2.0)
+Last updated: 2026-04-05

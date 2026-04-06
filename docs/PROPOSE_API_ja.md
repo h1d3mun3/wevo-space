@@ -107,6 +107,10 @@ dissolved                      parted
 | `DELETE` | `/proposes/:id` | 解消（proposed → dissolved） |
 | `PATCH` | `/proposes/:id/honor` | honor署名を追加（全員揃うと `honored` に自動遷移） |
 | `PATCH` | `/proposes/:id/part` | part署名を追加（いずれか1人が送れば即座に `parted` へ遷移） |
+| `GET` | `/health` | ヘルスチェック |
+| `GET` | `/info` | サーバー情報・ピアノード一覧 |
+| `GET` | `/v1/sync/proposes` | 指定日時以降に更新されたProposeを取得（ノード間同期） |
+| `POST` | `/v1/sync/proposes/batch` | Proposeのバッチをマージ（ノード間同期） |
 
 ---
 
@@ -312,7 +316,7 @@ GET /health
 
 ### GET /info — サーバー情報
 
-プロトコル名、バージョン、対応機能を返します。バージョンプレフィックスなし（`/v1` 不要）。
+プロトコル名、サーバーバージョン、クラスター内のピアノードURLを返します。バージョンプレフィックスなし（`/v1` 不要）。
 
 ```
 GET /info
@@ -323,14 +327,75 @@ GET /info
 ```json
 {
   "protocol": "wevo",
-  "version": "0.1.0",
-  "capabilities": [
-    "proposes.create",
-    "proposes.read",
-    "proposes.sign"
-  ]
+  "version": "0.2.0",
+  "peers": ["https://node-b.example.com", "https://node-c.example.com"]
 }
 ```
+
+シングルノード構成の場合、`peers` は空配列になります。
+
+---
+
+## ノード間同期エンドポイント
+
+これらのエンドポイントはマルチノード構成においてノード間の同期専用です。エンドユーザークライアントからの呼び出しは想定していません。
+
+認証: `Authorization: Bearer <SYNC_SECRET>`（サーバーに `SYNC_SECRET` が設定されている場合は必須）
+
+### GET /v1/sync/proposes — 更新済みProposeを取得
+
+指定タイムスタンプ以降に更新されたProposeをすべて返します。ピアノードが差分を取得するために使用します。
+
+**クエリパラメータ**
+
+| パラメータ | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `after` | string | ✅ | ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す |
+
+**リクエスト例**
+
+```
+GET /v1/sync/proposes?after=2026-01-01T00:00:00Z
+Authorization: Bearer <SYNC_SECRET>
+```
+
+**レスポンス (200 OK)**
+
+```json
+[
+  { /* ProposeResponseオブジェクト */ },
+  { /* ProposeResponseオブジェクト */ }
+]
+```
+
+| ステータス | 説明 |
+|---|---|
+| 200 OK | ProposeResponseの配列（空配列も可） |
+| 400 | `after` パラメータが不正または欠落 |
+| 401 | `Authorization` ヘッダーが不正または欠落（`SYNC_SECRET` 設定時） |
+
+---
+
+### POST /v1/sync/proposes/batch — Proposeバッチをプッシュ
+
+Proposeの配列を受け取り、ローカルDBにマージします。各Proposeはupsert方式で処理されます。既存フィールドをnullで上書きすることはなく、署名フィールドはnullの場合にのみ書き込みます（append-onlyマージ）。
+
+**リクエストボディ**
+
+```json
+[
+  { /* ProposeResponseオブジェクト */ },
+  { /* ProposeResponseオブジェクト */ }
+]
+```
+
+**レスポンス**
+
+| ステータス | 説明 |
+|---|---|
+| 200 OK | バッチを受理してマージ完了 |
+| 400 | リクエストボディが不正 |
+| 401 | `Authorization` ヘッダーが不正または欠落（`SYNC_SECRET` 設定時） |
 
 ---
 
@@ -416,5 +481,5 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
 
 ## バージョン
 
-API Version: 1.0.0
-最終更新: 2026-03-19
+API Version: 1.0.0（WevoSpace サーバーバージョン: 0.2.0）
+最終更新: 2026-04-05
