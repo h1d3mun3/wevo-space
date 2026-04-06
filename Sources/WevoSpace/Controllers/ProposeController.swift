@@ -149,12 +149,17 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        guard propose.proposeStatus == .proposed else {
-            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
-        }
-
         guard let counterparty = propose.counterparties.first(where: { $0.publicKey == input.signerPublicKey }) else {
             throw Abort(.forbidden, reason: "Not a counterparty of this Propose")
+        }
+
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
+        if counterparty.signSignature != nil {
+            return .ok
+        }
+
+        guard propose.proposeStatus == .proposed else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
         }
 
         // Signature verification: "signed." + proposeId + contentHash + signerPublicKey + timestamp
@@ -165,11 +170,7 @@ struct ProposeController: RouteCollection {
         counterparty.signTimestamp = input.timestamp
         try await counterparty.save(on: req.db)
 
-        // Auto-transition to signed when all counterparties have signed
-        if propose.counterparties.allSatisfy({ $0.signSignature != nil }) {
-            propose.proposeStatus = .signed
-            try await propose.save(on: req.db)
-        }
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -190,23 +191,23 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // Allow proposed (first party) or dissolved (second party recording their signature)
-        guard propose.proposeStatus == .proposed || propose.proposeStatus == .dissolved else {
-            throw Abort(.conflict, reason: "Only a propose in 'proposed' or 'dissolved' state can accept a dissolve signature (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can dissolve it")
         }
 
-        // Idempotent: already recorded for this party
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
         if isCreator && propose.creatorDissolveSignature != nil {
             return .ok
         }
         if let cp = counterparty, cp.dissolveSignature != nil {
             return .ok
+        }
+
+        // Allow proposed (first party) or dissolved (second party recording their signature)
+        guard propose.proposeStatus == .proposed || propose.proposeStatus == .dissolved else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' or 'dissolved' state can accept a dissolve signature (current: \(propose.status))")
         }
 
         // Signature verification (v1): "dissolved." + proposeId + contentHash + signerPublicKey + timestamp
@@ -217,7 +218,6 @@ struct ProposeController: RouteCollection {
             propose.creatorDissolveSignature = input.signature
             propose.creatorDissolveTimestamp = input.timestamp
             if propose.proposeStatus == .proposed {
-                propose.proposeStatus = .dissolved
                 propose.dissolvedAt = input.timestamp
             }
             try await propose.save(on: req.db)
@@ -226,11 +226,12 @@ struct ProposeController: RouteCollection {
             counterparty!.dissolveTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
             if propose.proposeStatus == .proposed {
-                propose.proposeStatus = .dissolved
                 propose.dissolvedAt = input.timestamp
                 try await propose.save(on: req.db)
             }
         }
+
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -251,40 +252,39 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        guard propose.proposeStatus == .signed else {
-            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can honor it")
         }
 
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
+        if isCreator && propose.honorCreatorSignature != nil {
+            return .ok
+        }
+        if let cp = counterparty, cp.honorSignature != nil {
+            return .ok
+        }
+
+        guard propose.proposeStatus == .signed else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
+        }
+
         // Signature verification (v1): "honored." + proposeId + contentHash + signerPublicKey + timestamp
         let message = "honored." + propose.id!.uuidString + propose.contentHash + input.publicKey + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
-        let creatorHonored: Bool
         if isCreator {
             propose.honorCreatorSignature = input.signature
             propose.honorCreatorTimestamp = input.timestamp
             try await propose.save(on: req.db)
-            creatorHonored = true
         } else {
             counterparty!.honorSignature = input.signature
             counterparty!.honorTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
-            // Re-fetch from DB to avoid stale in-memory read of honorCreatorSignature
-            let refreshed = try await Propose.find(proposeID, on: req.db)
-            creatorHonored = refreshed?.honorCreatorSignature != nil
         }
 
-        // Auto-transition to honored when all participants have signed
-        if creatorHonored && propose.counterparties.allSatisfy({ $0.honorSignature != nil }) {
-            propose.proposeStatus = .honored
-            try await propose.save(on: req.db)
-        }
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -305,23 +305,23 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // Allow signed (first party) or parted (second party recording their signature)
-        guard propose.proposeStatus == .signed || propose.proposeStatus == .parted else {
-            throw Abort(.conflict, reason: "Only a propose in 'signed' or 'parted' state can accept a part signature (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can part it")
         }
 
-        // Idempotent: already recorded for this party
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
         if isCreator && propose.partCreatorSignature != nil {
             return .ok
         }
         if let cp = counterparty, cp.partSignature != nil {
             return .ok
+        }
+
+        // Allow signed (first party) or parted (second party recording their signature)
+        guard propose.proposeStatus == .signed || propose.proposeStatus == .parted else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' or 'parted' state can accept a part signature (current: \(propose.status))")
         }
 
         // Signature verification (v1): "parted." + proposeId + contentHash + signerPublicKey + timestamp
@@ -331,19 +331,31 @@ struct ProposeController: RouteCollection {
         if isCreator {
             propose.partCreatorSignature = input.signature
             propose.partCreatorTimestamp = input.timestamp
+            try await propose.save(on: req.db)
         } else {
             counterparty!.partSignature = input.signature
             counterparty!.partTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
         }
 
-        // Transition to parted on first request; skip if already parted
-        if propose.proposeStatus == .signed {
-            propose.proposeStatus = .parted
-        }
-        try await propose.save(on: req.db)
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
+    }
+
+    // MARK: - Status Recomputation Helper
+
+    /// Re-fetches the Propose and all counterparties from DB, recomputes status from
+    /// the signatures actually present, and always saves to advance updatedAt so that
+    /// peer nodes pick up counterparty changes even when status hasn't changed.
+    private func recomputeAndSaveStatus(proposeID: UUID, on db: any Database) async throws {
+        guard let propose = try await Propose.query(on: db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else { return }
+
+        propose.proposeStatus = SyncService.computeStatus(propose: propose, counterparties: propose.counterparties)
+        try await propose.save(on: db)
     }
 
     // MARK: - Signature Verification Helper

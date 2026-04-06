@@ -2,12 +2,11 @@ import Fluent
 import Vapor
 
 // Pulls Proposes from peer nodes and merges them into the local database.
-// Actor isolation protects lastSyncAt per-peer state.
+// Actor isolation protects in-flight state; sync checkpoints are persisted in DB.
 actor SyncService {
     private let app: Application
     let peers: [String]
     let syncSecret: String?
-    private var lastSyncAt: [String: Date] = [:]
     private let peerClient: any SyncPeerFetching
     private let pageSize = 500
 
@@ -34,8 +33,18 @@ actor SyncService {
 
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
-        // Buffer by 1 minute to handle clock skew between nodes
-        let after = lastSyncAt[peerURL].map { $0.addingTimeInterval(-60) }
+
+        // Load last checkpoint from DB; buffer by 1 minute to handle clock skew
+        let checkpoint: SyncCheckpoint?
+        do {
+            checkpoint = try await SyncCheckpoint.query(on: app.db)
+                .filter(\.$peerURL == peerURL)
+                .first()
+        } catch {
+            app.logger.error("[Sync] \(peerURL): failed to load checkpoint — \(error)")
+            return
+        }
+        let after = checkpoint?.lastSyncAt.addingTimeInterval(-60)
 
         var offset = 0
         var totalMerged = 0
@@ -49,45 +58,68 @@ actor SyncService {
                     offset: offset
                 )
                 for propose in page {
-                    try await SyncService.upsertPropose(propose, on: app.db)
+                    try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger)
                 }
                 totalMerged += page.count
                 // If fewer results than page size, we've reached the last page
                 if page.count < pageSize { break }
                 offset += pageSize
             }
-            // Record start time (not completion time) so any Proposes created
-            // during this pull are captured in the next cycle
-            lastSyncAt[peerURL] = syncStartedAt
-            if totalMerged > 0 {
-                app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
+        } catch {
+            // Peer unreachable or returned invalid data — skip and retry next cycle
+            app.logger.warning("[Sync] \(peerURL) skipped: \(error)")
+            return
+        }
+
+        // Persist checkpoint using start time so any Proposes created
+        // during this pull are captured in the next cycle
+        do {
+            if let existing = checkpoint {
+                existing.lastSyncAt = syncStartedAt
+                try await existing.save(on: app.db)
+            } else {
+                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: syncStartedAt).save(on: app.db)
             }
         } catch {
-            // Unreachable peers are silently skipped; they will be retried next cycle
-            app.logger.warning("[Sync] \(peerURL) skipped: \(error.localizedDescription)")
+            app.logger.error("[Sync] \(peerURL): failed to persist checkpoint — \(error)")
+        }
+
+        if totalMerged > 0 {
+            app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
         }
     }
 
     // MARK: - Merge (static: no actor isolation needed, safe to call from anywhere)
 
-    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database) async throws {
+    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
         if let existing = try await Propose.query(on: db)
             .filter(\.$id == incoming.id)
             .with(\.$counterparties)
             .first() {
-            try await mergeInto(existing: existing, incoming: incoming, on: db)
+            try await mergeInto(existing: existing, incoming: incoming, on: db, logger: logger)
         } else {
             try await createFrom(incoming: incoming, on: db)
         }
     }
 
-    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database) async throws {
+    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
         var changed = false
+        let proposeID = existing.id?.uuidString ?? "unknown"
 
         // For each nullable field: adopt received value only when local is nil.
-        // If both are non-nil but differ, this indicates a cryptographic inconsistency;
-        // we keep the local value and log nothing — the data will not converge, which
-        // is intentional (two distinct signatures for the same operation is a fraud signal).
+        // If both are non-nil but differ, this indicates a cryptographic inconsistency (fraud signal);
+        // we keep the local value — the data will not converge intentionally.
+        func checkConflict(field: String, local: String?, peer: String?) {
+            if let local, let peer, local != peer {
+                logger.warning("[Sync] Conflict detected — propose \(proposeID) field '\(field)': local and peer values differ (fraud signal)")
+            }
+        }
+
+        checkConflict(field: "honorCreatorSignature", local: existing.honorCreatorSignature, peer: incoming.honorCreatorSignature)
+        checkConflict(field: "partCreatorSignature", local: existing.partCreatorSignature, peer: incoming.partCreatorSignature)
+        checkConflict(field: "dissolvedAt", local: existing.dissolvedAt, peer: incoming.dissolvedAt)
+        checkConflict(field: "creatorDissolveSignature", local: existing.creatorDissolveSignature, peer: incoming.creatorDissolveSignature)
+
         if existing.honorCreatorSignature == nil, let v = incoming.honorCreatorSignature {
             existing.honorCreatorSignature = v; changed = true
         }
@@ -111,38 +143,57 @@ actor SyncService {
         }
 
         for incomingCP in incoming.counterparties {
-            guard let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) else {
-                continue
-            }
-            var cpChanged = false
+            if let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) {
+                var cpChanged = false
+                let cpKey = String(incomingCP.publicKey.prefix(16))
 
-            if existingCP.signSignature == nil, let v = incomingCP.signSignature {
-                existingCP.signSignature = v; cpChanged = true
-            }
-            if existingCP.signTimestamp == nil, let v = incomingCP.signTimestamp {
-                existingCP.signTimestamp = v; cpChanged = true
-            }
-            if existingCP.honorSignature == nil, let v = incomingCP.honorSignature {
-                existingCP.honorSignature = v; cpChanged = true
-            }
-            if existingCP.honorTimestamp == nil, let v = incomingCP.honorTimestamp {
-                existingCP.honorTimestamp = v; cpChanged = true
-            }
-            if existingCP.partSignature == nil, let v = incomingCP.partSignature {
-                existingCP.partSignature = v; cpChanged = true
-            }
-            if existingCP.partTimestamp == nil, let v = incomingCP.partTimestamp {
-                existingCP.partTimestamp = v; cpChanged = true
-            }
-            if existingCP.dissolveSignature == nil, let v = incomingCP.dissolveSignature {
-                existingCP.dissolveSignature = v; cpChanged = true
-            }
-            if existingCP.dissolveTimestamp == nil, let v = incomingCP.dissolveTimestamp {
-                existingCP.dissolveTimestamp = v; cpChanged = true
-            }
+                checkConflict(field: "counterparty[\(cpKey)].signSignature", local: existingCP.signSignature, peer: incomingCP.signSignature)
+                checkConflict(field: "counterparty[\(cpKey)].honorSignature", local: existingCP.honorSignature, peer: incomingCP.honorSignature)
+                checkConflict(field: "counterparty[\(cpKey)].partSignature", local: existingCP.partSignature, peer: incomingCP.partSignature)
+                checkConflict(field: "counterparty[\(cpKey)].dissolveSignature", local: existingCP.dissolveSignature, peer: incomingCP.dissolveSignature)
 
-            if cpChanged {
-                try await existingCP.save(on: db)
+                if existingCP.signSignature == nil, let v = incomingCP.signSignature {
+                    existingCP.signSignature = v; cpChanged = true
+                }
+                if existingCP.signTimestamp == nil, let v = incomingCP.signTimestamp {
+                    existingCP.signTimestamp = v; cpChanged = true
+                }
+                if existingCP.honorSignature == nil, let v = incomingCP.honorSignature {
+                    existingCP.honorSignature = v; cpChanged = true
+                }
+                if existingCP.honorTimestamp == nil, let v = incomingCP.honorTimestamp {
+                    existingCP.honorTimestamp = v; cpChanged = true
+                }
+                if existingCP.partSignature == nil, let v = incomingCP.partSignature {
+                    existingCP.partSignature = v; cpChanged = true
+                }
+                if existingCP.partTimestamp == nil, let v = incomingCP.partTimestamp {
+                    existingCP.partTimestamp = v; cpChanged = true
+                }
+                if existingCP.dissolveSignature == nil, let v = incomingCP.dissolveSignature {
+                    existingCP.dissolveSignature = v; cpChanged = true
+                }
+                if existingCP.dissolveTimestamp == nil, let v = incomingCP.dissolveTimestamp {
+                    existingCP.dissolveTimestamp = v; cpChanged = true
+                }
+
+                if cpChanged {
+                    try await existingCP.save(on: db)
+                    changed = true
+                }
+            } else {
+                // Counterparty exists on peer but not locally — create from peer data
+                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: incomingCP.publicKey)
+                newCP.signSignature = incomingCP.signSignature
+                newCP.signTimestamp = incomingCP.signTimestamp
+                newCP.honorSignature = incomingCP.honorSignature
+                newCP.honorTimestamp = incomingCP.honorTimestamp
+                newCP.partSignature = incomingCP.partSignature
+                newCP.partTimestamp = incomingCP.partTimestamp
+                newCP.dissolveSignature = incomingCP.dissolveSignature
+                newCP.dissolveTimestamp = incomingCP.dissolveTimestamp
+                try await newCP.save(on: db)
+                existing.counterparties.append(newCP)
                 changed = true
             }
         }

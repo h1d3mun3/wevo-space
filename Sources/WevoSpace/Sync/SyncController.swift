@@ -33,7 +33,7 @@ struct SyncController: RouteCollection {
             guard let afterDate = formatter.date(from: afterString) else {
                 throw Abort(.badRequest, reason: "Invalid 'after' value. Expected ISO8601 (e.g. 2026-01-01T00:00:00Z).")
             }
-            query = query.filter(\.$updatedAt >= afterDate)
+            query = query.filter(\.$updatedAt > afterDate)
         }
 
         let proposes = try await query.range(offset..<(offset + limit)).all()
@@ -49,7 +49,7 @@ struct SyncController: RouteCollection {
 
         let incoming = try req.content.decode([ProposeResponse].self)
         for propose in incoming {
-            try await SyncService.upsertPropose(propose, on: req.db)
+            try await SyncService.upsertPropose(propose, on: req.db, logger: req.logger)
         }
         return .ok
     }
