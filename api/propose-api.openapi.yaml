@@ -324,8 +324,9 @@ paths:
     get:
       summary: Pull proposes updated after a given timestamp
       description: |
-        Returns all proposes whose `updatedAt` is after the given timestamp.
-        Used by peer nodes to pull incremental updates.
+        Returns proposes whose `updatedAt` is after the given timestamp, sorted by `updatedAt` ascending.
+        Used by peer nodes to pull incremental updates. Supports pagination for initial full-sync of large datasets.
+        When the response count is less than `limit`, the last page has been reached.
         Requires `Authorization: Bearer <SYNC_SECRET>` when `SYNC_SECRET` is configured on the server.
       tags: [NodeSync]
       security:
@@ -333,14 +334,31 @@ paths:
       parameters:
         - name: after
           in: query
-          required: true
-          description: ISO8601 timestamp; returns proposes updated after this time
+          required: false
+          description: ISO8601 timestamp; returns proposes updated after this time. Omit to return all proposes (initial sync).
           schema:
             type: string
             format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 500, max 1000)
+          schema:
+            type: integer
+            default: 500
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          required: false
+          description: Number of records to skip (default 0)
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
       responses:
         '200':
-          description: Array of ProposeResponse objects (may be empty)
+          description: Array of ProposeResponse objects sorted by updatedAt ascending (may be empty)
           content:
             application/json:
               schema:
@@ -348,7 +366,7 @@ paths:
                 items:
                   $ref: '#/components/schemas/ProposeResponse'
         '400':
-          description: Missing or invalid `after` parameter
+          description: Invalid `after` parameter format
           content:
             application/json:
               schema:

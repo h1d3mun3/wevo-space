@@ -321,8 +321,9 @@ paths:
     get:
       summary: 指定日時以降に更新されたProposeを取得
       description: |
-        `updatedAt` が指定タイムスタンプより後のProposeをすべて返します。
-        ピアノードが差分を取得するために使用します。
+        `updatedAt` が指定タイムスタンプより後のProposeを `updatedAt` 昇順で返します。
+        ピアノードが差分を取得するために使用します。大量データの初回同期にはページネーションをサポートしています。
+        レスポンス件数が `limit` 未満の場合、最終ページに達したことを示します。
         サーバーに `SYNC_SECRET` が設定されている場合は `Authorization: Bearer <SYNC_SECRET>` が必要です。
       tags: [NodeSync]
       security:
@@ -330,14 +331,31 @@ paths:
       parameters:
         - name: after
           in: query
-          required: true
-          description: ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す
+          required: false
+          description: ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す。省略時は全件返す（初回同期用）
           schema:
             type: string
             format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: 1ページあたりの件数（デフォルト: 500、最大: 1000）
+          schema:
+            type: integer
+            default: 500
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          required: false
+          description: スキップするレコード数（デフォルト: 0）
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
       responses:
         '200':
-          description: ProposeResponseの配列（空配列も可）
+          description: updatedAt昇順でソートされたProposeResponseの配列（空配列も可）
           content:
             application/json:
               schema:
@@ -345,7 +363,7 @@ paths:
                 items:
                   $ref: '#/components/schemas/ProposeResponse'
         '400':
-          description: '`after` パラメータが不正または欠落'
+          description: '`after` パラメータの形式が不正'
           content:
             application/json:
               schema:

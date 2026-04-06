@@ -342,18 +342,20 @@ Authentication: `Authorization: Bearer <SYNC_SECRET>` (required when `SYNC_SECRE
 
 ### GET /v1/sync/proposes — Pull Updated Proposes
 
-Returns all proposes whose `updatedAt` is after the given timestamp. Used by peer nodes to pull incremental updates.
+Returns proposes whose `updatedAt` is after the given timestamp, sorted by `updatedAt` ascending. Used by peer nodes to pull incremental updates. Supports pagination for initial full-sync of large datasets.
 
 **Query Parameters**
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `after` | string | ✅ | ISO8601 timestamp; returns proposes updated after this time |
+| `after` | string | — | ISO8601 timestamp; returns proposes updated after this time. Omit to return all proposes (initial sync). |
+| `limit` | integer | — | Page size (default: 500, max: 1000) |
+| `offset` | integer | — | Number of records to skip (default: 0) |
 
 **Request Example**
 
 ```
-GET /v1/sync/proposes?after=2026-01-01T00:00:00Z
+GET /v1/sync/proposes?after=2026-01-01T00:00:00Z&limit=500&offset=0
 Authorization: Bearer <SYNC_SECRET>
 ```
 
@@ -366,10 +368,12 @@ Authorization: Bearer <SYNC_SECRET>
 ]
 ```
 
+Results are sorted by `updatedAt` ascending. When the response count is less than `limit`, the last page has been reached.
+
 | Status | Description |
 |---|---|
 | 200 OK | Array of ProposeResponse objects (may be empty) |
-| 400 | Missing or invalid `after` parameter |
+| 400 | Invalid `after` parameter format |
 | 401 | Missing or invalid `Authorization` header (when `SYNC_SECRET` is set) |
 
 ---
@@ -480,4 +484,4 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
 ## Version
 
 API Version: 1.0.0 (WevoSpace server version: 0.2.0)
-Last updated: 2026-04-05
+Last updated: 2026-04-06

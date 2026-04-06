@@ -344,18 +344,20 @@ GET /info
 
 ### GET /v1/sync/proposes — 更新済みProposeを取得
 
-指定タイムスタンプ以降に更新されたProposeをすべて返します。ピアノードが差分を取得するために使用します。
+指定タイムスタンプ以降に更新されたProposeを `updatedAt` 昇順で返します。ピアノードが差分を取得するために使用します。大量データの初回同期にはページネーションをサポートしています。
 
 **クエリパラメータ**
 
 | パラメータ | 型 | 必須 | 説明 |
 |---|---|---|---|
-| `after` | string | ✅ | ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す |
+| `after` | string | — | ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す。省略時は全件返す（初回同期用） |
+| `limit` | integer | — | 1ページあたりの件数（デフォルト: 500、最大: 1000） |
+| `offset` | integer | — | スキップするレコード数（デフォルト: 0） |
 
 **リクエスト例**
 
 ```
-GET /v1/sync/proposes?after=2026-01-01T00:00:00Z
+GET /v1/sync/proposes?after=2026-01-01T00:00:00Z&limit=500&offset=0
 Authorization: Bearer <SYNC_SECRET>
 ```
 
@@ -368,10 +370,12 @@ Authorization: Bearer <SYNC_SECRET>
 ]
 ```
 
+結果は `updatedAt` 昇順でソートされます。レスポンス件数が `limit` 未満の場合、最終ページに達したことを示します。
+
 | ステータス | 説明 |
 |---|---|
 | 200 OK | ProposeResponseの配列（空配列も可） |
-| 400 | `after` パラメータが不正または欠落 |
+| 400 | `after` パラメータの形式が不正 |
 | 401 | `Authorization` ヘッダーが不正または欠落（`SYNC_SECRET` 設定時） |
 
 ---
@@ -482,4 +486,4 @@ curl -X PATCH http://localhost:8080/v1/proposes/550E8400-E29B-41D4-A716-44665544
 ## バージョン
 
 API Version: 1.0.0（WevoSpace サーバーバージョン: 0.2.0）
-最終更新: 2026-04-05
+最終更新: 2026-04-06
