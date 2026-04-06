@@ -2,12 +2,11 @@ import Fluent
 import Vapor
 
 // Pulls Proposes from peer nodes and merges them into the local database.
-// Actor isolation protects lastSyncAt per-peer state.
+// Actor isolation protects in-flight state; sync checkpoints are persisted in DB.
 actor SyncService {
     private let app: Application
     let peers: [String]
     let syncSecret: String?
-    private var lastSyncAt: [String: Date] = [:]
     private let peerClient: any SyncPeerFetching
     private let pageSize = 500
 
@@ -34,13 +33,17 @@ actor SyncService {
 
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
-        // Buffer by 1 minute to handle clock skew between nodes
-        let after = lastSyncAt[peerURL].map { $0.addingTimeInterval(-60) }
-
-        var offset = 0
-        var totalMerged = 0
 
         do {
+            // Load last checkpoint from DB; buffer by 1 minute to handle clock skew
+            let checkpoint = try await SyncCheckpoint.query(on: app.db)
+                .filter(\.$peerURL == peerURL)
+                .first()
+            let after = checkpoint?.lastSyncAt.addingTimeInterval(-60)
+
+            var offset = 0
+            var totalMerged = 0
+
             while true {
                 let page = try await peerClient.fetchProposes(
                     from: peerURL,
@@ -56,9 +59,16 @@ actor SyncService {
                 if page.count < pageSize { break }
                 offset += pageSize
             }
-            // Record start time (not completion time) so any Proposes created
+
+            // Persist checkpoint using start time so any Proposes created
             // during this pull are captured in the next cycle
-            lastSyncAt[peerURL] = syncStartedAt
+            if let existing = checkpoint {
+                existing.lastSyncAt = syncStartedAt
+                try await existing.save(on: app.db)
+            } else {
+                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: syncStartedAt).save(on: app.db)
+            }
+
             if totalMerged > 0 {
                 app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
             }
