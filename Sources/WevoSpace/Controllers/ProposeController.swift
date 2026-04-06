@@ -333,18 +333,16 @@ struct ProposeController: RouteCollection {
     // MARK: - Status Recomputation Helper
 
     /// Re-fetches the Propose and all counterparties from DB, recomputes status from
-    /// the signatures actually present, and saves if the status changed.
+    /// the signatures actually present, and always saves to advance updatedAt so that
+    /// peer nodes pick up counterparty changes even when status hasn't changed.
     private func recomputeAndSaveStatus(proposeID: UUID, on db: any Database) async throws {
         guard let propose = try await Propose.query(on: db)
             .filter(\.$id == proposeID)
             .with(\.$counterparties)
             .first() else { return }
 
-        let newStatus = SyncService.computeStatus(propose: propose, counterparties: propose.counterparties)
-        if propose.proposeStatus != newStatus {
-            propose.proposeStatus = newStatus
-            try await propose.save(on: db)
-        }
+        propose.proposeStatus = SyncService.computeStatus(propose: propose, counterparties: propose.counterparties)
+        try await propose.save(on: db)
     }
 
     // MARK: - Signature Verification Helper
