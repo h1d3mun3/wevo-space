@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   app:
-    image: wevospace:latest  # 既存のイメージ名
+    image: h1d3mun3/wevo-space:latest
     build: .
     restart: always
     ports:
