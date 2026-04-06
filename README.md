@@ -118,7 +118,7 @@ dissolved           parted
 
 Full documentation:
 - English: [docs/PROPOSE_API.md](docs/PROPOSE_API.md)
-- OpenAPI: [api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml)
+- OpenAPI: [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
 
 ## Security Model
 
@@ -197,8 +197,8 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for multi-node docker-compose examples and op
 
 - English: [docs/PROPOSE_API.md](docs/PROPOSE_API.md)
 - 日本語: [docs/PROPOSE_API_ja.md](docs/PROPOSE_API_ja.md)
-- OpenAPI (English): [api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml)
-- OpenAPI (日本語): [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
+- OpenAPI: [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
+- OpenAPI (日本語): [api/propose-api.ja.openapi.yaml](api/propose-api.ja.openapi.yaml)
 
 ## Client Documentation
 
@@ -327,7 +327,7 @@ dissolved           parted
 詳細ドキュメント：
 - 英語：[docs/PROPOSE_API.md](docs/PROPOSE_API.md)
 - 日本語：[docs/PROPOSE_API_ja.md](docs/PROPOSE_API_ja.md)
-- OpenAPI 仕様：[api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml) / [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
+- OpenAPI 仕様：[api/propose-api.openapi.yaml](api/propose-api.openapi.yaml) / [api/propose-api.ja.openapi.yaml](api/propose-api.ja.openapi.yaml)
 
 ## セキュリティモデル
 

@@ -2,31 +2,33 @@ openapi: 3.0.0
 info:
   title: WevoSpace Propose API
   description: |
-    API for recording and managing multi-party agreements with cryptographic signatures.
-    No authentication tokens required — all state transitions are secured by P-256 ECDSA signature verification.
+    多者間の合意を暗号署名で記録・管理するAPI。
+    認証機構は設けず、すべての状態遷移はP-256 ECDSA署名検証によって担保されます。
   version: 1.0.0
   contact:
     name: WevoSpace Team
 
 servers:
   - url: http://localhost:8080/v1
-    description: Development server
+    description: 開発環境
   - url: https://api.wevospace.example.com/v1
-    description: Production server
+    description: 本番環境
 
 tags:
   - name: Propose
-    description: Create, retrieve, and transition Proposes
+    description: Proposeの作成・取得・状態遷移
   - name: Utility
-    description: Health check and server info
+    description: ヘルスチェック・サーバー情報
+  - name: NodeSync
+    description: ノード間同期エンドポイント（エンドユーザークライアント向けではありません）
 
 paths:
   /proposes:
     post:
-      summary: Create a propose
+      summary: Propose作成
       description: |
-        The creator creates a new Propose.
-        Message to sign: `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys(sorted & joined) + createdAt`
+        作成者が新しいProposeを作成します。
+        署名対象: `"proposed." + proposeId + contentHash + creatorPublicKey + counterpartyPublicKeys（辞書順ソート&結合） + createdAt`
       tags: [Propose]
       requestBody:
         required: true
@@ -43,21 +45,21 @@ paths:
               createdAt: "2026-01-01T00:00:00Z"
       responses:
         '201':
-          description: Propose created successfully
+          description: 作成成功
         '400':
-          description: Invalid proposeId format, or counterpartyPublicKeys is empty
+          description: proposeIdの形式が無効、またはcounterpartyPublicKeysが空
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Signature verification failed
+          description: 署名検証失敗
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: A Propose with the same ID already exists
+          description: 同じIDのProposeが既に存在
           content:
             application/json:
               schema:
@@ -65,35 +67,35 @@ paths:
 
   /proposes/{id}:
     get:
-      summary: Get propose details
+      summary: Propose詳細取得
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
       responses:
         '200':
-          description: Success
+          description: 取得成功
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProposeResponse'
         '400':
-          description: Invalid UUID format
+          description: 無効なUUID形式
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose not found
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
     delete:
-      summary: Dissolve a propose (proposed → dissolved)
+      summary: Proposeを解消（proposed → dissolved）
       description: |
-        The creator or any counterparty signs to dissolve the Propose. Only allowed from `proposed` state.
-        Message to sign: `"dissolved." + proposeId + contentHash + publicKey + timestamp`
+        作成者またはいずれかの相手方が署名してProposeを解消します。proposed状態のみ可。
+        署名対象: `"dissolved." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -109,27 +111,27 @@ paths:
               timestamp: "2026-01-02T00:00:00Z"
       responses:
         '200':
-          description: Dissolved successfully; transitions to dissolved
+          description: 解消成功、dissolvedに遷移
         '401':
-          description: Signature verification failed
+          description: 署名検証失敗
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Public key does not belong to a participant
+          description: 参加者以外の公開鍵
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose not found
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Propose is not in proposed state
+          description: proposed状態ではない
           content:
             application/json:
               schema:
@@ -137,11 +139,10 @@ paths:
 
   /proposes/{id}/sign:
     patch:
-      summary: Counterparty signs (auto-transitions to signed when all have signed)
+      summary: 相手方が署名（全員揃うとproposed → signed）
       description: |
-        A registered counterparty signs the Propose. The Propose automatically transitions to `signed`
-        once all counterparties have signed.
-        Message to sign: `"signed." + proposeId + contentHash + signerPublicKey + timestamp`
+        登録済みの相手方が署名します。全ての相手方が署名した時点でsigned状態に自動遷移します。
+        署名対象: `"signed." + proposeId + contentHash + signerPublicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -157,33 +158,33 @@ paths:
               timestamp: "2026-01-01T00:00:00Z"
       responses:
         '200':
-          description: Signed successfully; transitions to signed when all counterparties have signed
+          description: 署名成功。全相手方が揃えばsignedに遷移
         '400':
-          description: Invalid Propose ID
+          description: 無効なPropose ID
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Signature verification failed
+          description: 署名検証失敗
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: signerPublicKey is not a registered counterparty
+          description: signerPublicKeyが登録済み相手方ではない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose not found
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Propose is not in proposed state
+          description: proposed状態ではない
           content:
             application/json:
               schema:
@@ -191,11 +192,10 @@ paths:
 
   /proposes/{id}/honor:
     patch:
-      summary: Submit honor signature (auto-transitions to honored when all submitted)
+      summary: Honor署名を追加（全員揃うとsigned → honored）
       description: |
-        Each participant submits a signature. Once the creator and all counterparties have signed,
-        the Propose automatically transitions to `honored`.
-        Message to sign: `"honored." + proposeId + contentHash + publicKey + timestamp`
+        各参加者が署名を追加します。作成者と全ての相手方が揃うとhonored状態に自動遷移。
+        署名対象: `"honored." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -211,27 +211,27 @@ paths:
               timestamp: "2026-01-03T00:00:00Z"
       responses:
         '200':
-          description: Signature recorded; transitions to honored when all participants have submitted
+          description: 署名記録。全員揃えばhonored遷移
         '401':
-          description: Signature verification failed
+          description: 署名検証失敗
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Public key does not belong to a participant
+          description: 参加者以外の公開鍵
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose not found
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Propose is not in signed state
+          description: signed状態ではない
           content:
             application/json:
               schema:
@@ -239,11 +239,10 @@ paths:
 
   /proposes/{id}/part:
     patch:
-      summary: Submit part signature (transitions to parted immediately when any participant submits)
+      summary: Part署名を追加（いずれか1人でsigned → 即座にparted）
       description: |
-        Any participant submits a signature. The Propose transitions to `parted` immediately
-        when any one participant submits — no need to wait for all participants.
-        Message to sign: `"parted." + proposeId + contentHash + publicKey + timestamp`
+        いずれかの参加者が署名を追加します。1人でも送信した時点で即座にparted状態へ遷移します。全員分を待ちません。
+        署名対象: `"parted." + proposeId + contentHash + publicKey + timestamp`
       tags: [Propose]
       parameters:
         - $ref: '#/components/parameters/ProposeId'
@@ -259,40 +258,40 @@ paths:
               timestamp: "2026-01-03T00:00:00Z"
       responses:
         '200':
-          description: Signature recorded; transitions to parted immediately
+          description: 署名記録。即座にparted遷移
         '401':
-          description: Signature verification failed
+          description: 署名検証失敗
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Public key does not belong to a participant
+          description: 参加者以外の公開鍵
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Propose not found
+          description: Proposeが見つからない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Propose is not in signed state
+          description: signed状態ではない
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-/health:
+  /health:
     get:
-      summary: Health check
-      description: Returns the server's operational status. No `/v1` prefix.
+      summary: ヘルスチェック
+      description: サーバーの稼働状態を返します。`/v1` プレフィックスは不要です。
       tags: [Utility]
       responses:
         '200':
-          description: Server is healthy
+          description: サーバー正常稼働中
           content:
             application/json:
               schema:
@@ -307,24 +306,102 @@ paths:
 
   /info:
     get:
-      summary: Server info
-      description: Returns the protocol name, version, and supported capabilities. No `/v1` prefix.
+      summary: サーバー情報
+      description: プロトコル名、サーバーバージョン、ピアノードURLを返します。`/v1` プレフィックスは不要です。
       tags: [Utility]
       responses:
         '200':
-          description: Server information
+          description: サーバー情報
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InfoResponse'
 
+  /v1/sync/proposes:
+    get:
+      summary: 指定日時以降に更新されたProposeを取得
+      description: |
+        `updatedAt` が指定タイムスタンプより後のProposeをすべて返します。
+        ピアノードが差分を取得するために使用します。
+        サーバーに `SYNC_SECRET` が設定されている場合は `Authorization: Bearer <SYNC_SECRET>` が必要です。
+      tags: [NodeSync]
+      security:
+        - syncBearer: []
+      parameters:
+        - name: after
+          in: query
+          required: true
+          description: ISO8601タイムスタンプ。この日時より後に更新されたProposeを返す
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: ProposeResponseの配列（空配列も可）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProposeResponse'
+        '400':
+          description: '`after` パラメータが不正または欠落'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authorizationヘッダーが不正または欠落
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/sync/proposes/batch:
+    post:
+      summary: Proposeバッチをプッシュしてマージ
+      description: |
+        Proposeの配列を受け取り、ローカルDBにマージします。
+        各ProposeはUpsert処理されます。既存フィールドをnullで上書きすることはなく、署名フィールドはnullの場合にのみ書き込みます（append-onlyマージ）。
+        サーバーに `SYNC_SECRET` が設定されている場合は `Authorization: Bearer <SYNC_SECRET>` が必要です。
+      tags: [NodeSync]
+      security:
+        - syncBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncBatchInput'
+      responses:
+        '200':
+          description: バッチを受理してマージ完了
+        '400':
+          description: リクエストボディが不正
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authorizationヘッダーが不正または欠落
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
+  securitySchemes:
+    syncBearer:
+      type: http
+      scheme: bearer
+      description: ノード間認証用の共有シークレット（SYNC_SECRET環境変数）
+
   parameters:
     ProposeId:
       name: id
       in: path
       required: true
-      description: Propose ID (UUID)
+      description: Propose ID（UUID）
       schema:
         type: string
         format: uuid
@@ -336,87 +413,87 @@ components:
         id:
           type: string
           format: uuid
-          description: Propose ID (client-generated)
+          description: Propose ID（クライアントが生成）
         contentHash:
           type: string
-          description: Hash of the content
+          description: コンテンツのハッシュ値
         creatorPublicKey:
           type: string
-          description: Creator's public key (JWK JSON string)
+          description: 作成者の公開鍵（JWK JSON文字列）
         creatorSignature:
           type: string
-          description: Creator's signature (Base64 / DER format)
+          description: 作成者の署名（Base64 / DER形式）
         counterparties:
           type: array
           items:
             $ref: '#/components/schemas/CounterpartyInfo'
-          description: List of counterparties and their signatures
+          description: 相手方と各署名のリスト
         honorCreatorSignature:
           type: string
           nullable: true
-          description: Creator's honor signature
+          description: 作成者のhonor署名
         honorCreatorTimestamp:
           type: string
           nullable: true
-          description: Creator's honor timestamp (ISO8601)
+          description: 作成者のhonorタイムスタンプ（ISO8601）
         partCreatorSignature:
           type: string
           nullable: true
-          description: Creator's part signature
+          description: 作成者のpart署名
         partCreatorTimestamp:
           type: string
           nullable: true
-          description: Creator's part timestamp (ISO8601)
+          description: 作成者のpartタイムスタンプ（ISO8601）
         dissolvedAt:
           type: string
           nullable: true
-          description: Dissolution timestamp (ISO8601)
+          description: 解消タイムスタンプ（ISO8601）
         status:
           type: string
           enum: [proposed, signed, honored, dissolved, parted]
-          description: Current status
+          description: 現在の状態
         signatureVersion:
           type: integer
-          description: Signature scheme version (current: 1)
+          description: 署名スキームバージョン（現行: 1）
         createdAt:
           type: string
-          description: Creation timestamp (ISO8601, client-generated)
+          description: 作成日時（ISO8601、クライアントが生成）
         updatedAt:
           type: string
           format: date-time
           nullable: true
-          description: Last updated timestamp (server-managed)
+          description: 最終更新日時（サーバーが管理）
 
     CounterpartyInfo:
       type: object
       properties:
         publicKey:
           type: string
-          description: Counterparty's public key (JWK JSON string)
+          description: 相手方の公開鍵（JWK JSON文字列）
         signSignature:
           type: string
           nullable: true
-          description: Signature for /sign (set after signing)
+          description: /sign の署名（署名後にセット）
         signTimestamp:
           type: string
           nullable: true
-          description: Timestamp for /sign (ISO8601)
+          description: /sign のタイムスタンプ（ISO8601）
         honorSignature:
           type: string
           nullable: true
-          description: Signature for /honor
+          description: /honor の署名
         honorTimestamp:
           type: string
           nullable: true
-          description: Timestamp for /honor (ISO8601)
+          description: /honor のタイムスタンプ（ISO8601）
         partSignature:
           type: string
           nullable: true
-          description: Signature for /part
+          description: /part の署名
         partTimestamp:
           type: string
           nullable: true
-          description: Timestamp for /part (ISO8601)
+          description: /part のタイムスタンプ（ISO8601）
 
     CreateProposeInput:
       type: object
@@ -430,25 +507,25 @@ components:
       properties:
         proposeId:
           type: string
-          description: UUID string (client-generated)
+          description: UUID文字列（クライアントが生成）
         contentHash:
           type: string
-          description: Hash of the content
+          description: コンテンツのハッシュ値
         creatorPublicKey:
           type: string
-          description: Creator's public key (JWK JSON string)
+          description: 作成者の公開鍵（JWK JSON文字列）
         creatorSignature:
           type: string
-          description: Creator's signature (Base64 / DER format)
+          description: 作成者の署名（Base64 / DER形式）
         counterpartyPublicKeys:
           type: array
           items:
             type: string
           minItems: 1
-          description: Counterparty public keys (1 or more)
+          description: 相手方の公開鍵リスト（1件以上）
         createdAt:
           type: string
-          description: ISO8601 creation timestamp
+          description: ISO8601形式の作成日時
 
     SignInput:
       type: object
@@ -459,13 +536,13 @@ components:
       properties:
         signerPublicKey:
           type: string
-          description: Signer's public key (must be a registered counterparty, JWK JSON string)
+          description: 署名者の公開鍵（登録済みの相手方であること、JWK JSON文字列）
         signature:
           type: string
-          description: Signer's signature (Base64 / DER format)
+          description: 署名者の署名（Base64 / DER形式）
         timestamp:
           type: string
-          description: Operation timestamp (ISO8601)
+          description: 操作タイムスタンプ（ISO8601）
 
     TransitionInput:
       type: object
@@ -476,13 +553,13 @@ components:
       properties:
         publicKey:
           type: string
-          description: Requester's public key (creator or counterparty)
+          description: 操作者の公開鍵（creator or counterparty）
         signature:
           type: string
-          description: Requester's signature (Base64 / DER format)
+          description: 操作者の署名（Base64 / DER形式）
         timestamp:
           type: string
-          description: Operation timestamp (ISO8601)
+          description: 操作日時（ISO8601）
 
     InfoResponse:
       type: object
@@ -492,12 +569,19 @@ components:
           example: wevo
         version:
           type: string
-          example: 0.1.0
-        capabilities:
+          example: 0.2.0
+        peers:
           type: array
           items:
             type: string
-          example: [proposes.create, proposes.read, proposes.sign]
+          description: クラスター内の既知ピアノードURL（シングルノード構成では空配列）
+          example: ["https://node-b.example.com", "https://node-c.example.com"]
+
+    SyncBatchInput:
+      type: array
+      description: マージするProposeResponseオブジェクトの配列
+      items:
+        $ref: '#/components/schemas/ProposeResponse'
 
     ErrorResponse:
       type: object
@@ -507,4 +591,4 @@ components:
           example: true
         reason:
           type: string
-          description: Error description
+          description: エラーの理由
