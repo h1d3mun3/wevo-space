@@ -444,8 +444,8 @@ struct ProposeControllerTests {
         }
     }
 
-    @Test("Signing a Propose in a non-proposed state returns an error")
-    func signNonProposedProposeReturnsConflict() async throws {
+    @Test("Same counterparty re-sending sign signature is idempotent")
+    func signIdempotentForSameParty() async throws {
         try await withApp { app in
             let (proposeId, contentHash, _, _, counterparty) = try await createPropose(app: app)
 
@@ -459,13 +459,17 @@ struct ProposeControllerTests {
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
+                let propose = try await Propose.query(on: app.db).filter(\.$id == proposeId).with(\.$counterparties).first()
+                #expect(propose?.proposeStatus == .signed)
             })
 
-            // Second sign → conflict (already in signed state)
+            // Second sign (status is now .signed) → idempotent, returns 200 and preserves original signature
             try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
                 try req.content.encode(input)
             }, afterResponse: { res async throws in
-                #expect(res.status == .conflict)
+                #expect(res.status == .ok)
+                let propose = try await Propose.query(on: app.db).filter(\.$id == proposeId).with(\.$counterparties).first()
+                #expect(propose?.counterparties.first?.signSignature == sig)
             })
         }
     }
@@ -801,6 +805,87 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("Creator re-sending honor signature is idempotent")
+    func honorIdempotentForCreator() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(signMessage), timestamp: signTimestamp))
+            }, afterResponse: { res async throws in #expect(res.status == .ok) })
+
+            // Creator honors (status stays .signed — counterparty hasn't honored yet)
+            let timestamp = "2026-01-03T00:00:00Z"
+            let honorMessage = "honored." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            let honorSig = try creator.sign(honorMessage)
+            let input = TransitionInput(publicKey: creator.publicKeyBase64, signature: honorSig, timestamp: timestamp)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.proposeStatus == .signed)
+            })
+
+            // Creator re-sends honor → idempotent, returns 200 and preserves original signature
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.find(proposeId, on: app.db)
+                #expect(propose?.honorCreatorSignature == honorSig)
+            })
+        }
+    }
+
+    @Test("Counterparty re-sending honor signature is idempotent even after .honored")
+    func honorIdempotentForCounterpartyAfterHonored() async throws {
+        try await withApp { app in
+            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
+
+            // proposed → signed
+            let signTimestamp = "2026-01-02T00:00:00Z"
+            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
+                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: try counterparty.sign(signMessage), timestamp: signTimestamp))
+            }, afterResponse: { res async throws in #expect(res.status == .ok) })
+
+            let timestamp = "2026-01-03T00:00:00Z"
+
+            // Creator honors
+            let creatorHonorMessage = "honored." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(creatorHonorMessage), timestamp: timestamp))
+            }, afterResponse: { res async throws in #expect(res.status == .ok) })
+
+            // Counterparty honors → .honored
+            let cpHonorMessage = "honored." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + timestamp
+            let cpHonorSig = try counterparty.sign(cpHonorMessage)
+            let cpInput = TransitionInput(publicKey: counterparty.publicKeyBase64, signature: cpHonorSig, timestamp: timestamp)
+
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(cpInput)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.query(on: app.db).filter(\.$id == proposeId).with(\.$counterparties).first()
+                #expect(propose?.proposeStatus == .honored)
+            })
+
+            // Counterparty re-sends honor (status is .honored) → idempotent, returns 200 and preserves original signature
+            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/honor", beforeRequest: { req in
+                try req.content.encode(cpInput)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let propose = try await Propose.query(on: app.db).filter(\.$id == proposeId).with(\.$counterparties).first()
+                #expect(propose?.counterparties.first?.honorSignature == cpHonorSig)
+            })
+        }
+    }
+
     // MARK: - PATCH /v1/proposes/:id/part
 
     @Test("Creator parting immediately transitions to parted state")
@@ -1074,36 +1159,6 @@ struct ProposeControllerTests {
 
             try await app.testing().test(.DELETE, "v1/proposes/\(proposeId)", beforeRequest: { req in
                 try req.content.encode(input)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .conflict)
-            })
-        }
-    }
-
-    @Test("A Propose in parted state cannot be signed")
-    func signPartedProposeReturnsConflict() async throws {
-        try await withApp { app in
-            let (proposeId, contentHash, _, creator, counterparty) = try await createPropose(app: app)
-
-            // proposed → signed
-            let signTimestamp = "2026-01-02T00:00:00Z"
-            let signMessage = "signed." + proposeId.uuidString + contentHash + counterparty.publicKeyBase64 + signTimestamp
-            let counterpartySig = try counterparty.sign(signMessage)
-            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: counterpartySig, timestamp: signTimestamp))
-            }, afterResponse: { res async throws in #expect(res.status == .ok) })
-
-            // signed → parted
-            let timestamp = "2026-01-03T00:00:00Z"
-            let partMessage = "parted." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + timestamp
-            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/part", beforeRequest: { req in
-                try req.content.encode(TransitionInput(publicKey: creator.publicKeyBase64, signature: try creator.sign(partMessage), timestamp: timestamp))
-            }, afterResponse: { res async throws in #expect(res.status == .ok) })
-
-            // parted → sign attempt → conflict
-            let newSig = try counterparty.sign(signMessage)
-            try await app.testing().test(.PATCH, "v1/proposes/\(proposeId)/sign", beforeRequest: { req in
-                try req.content.encode(SignInput(signerPublicKey: counterparty.publicKeyBase64, signature: newSig, timestamp: signTimestamp))
             }, afterResponse: { res async throws in
                 #expect(res.status == .conflict)
             })

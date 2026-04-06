@@ -18,6 +18,7 @@ struct SyncServiceTests {
             app.migrations.add(AddSignatureVersionAndResetProposes())
             app.migrations.add(AddDissolveSignatureToPropose())
             app.migrations.add(AddPerPartyDissolveSignatures())
+            app.migrations.add(CreateSyncCheckpointsTable())
             try await app.autoMigrate()
             try await test(app)
             try await app.autoRevert()
