@@ -165,11 +165,7 @@ struct ProposeController: RouteCollection {
         counterparty.signTimestamp = input.timestamp
         try await counterparty.save(on: req.db)
 
-        // Auto-transition to signed when all counterparties have signed
-        if propose.counterparties.allSatisfy({ $0.signSignature != nil }) {
-            propose.proposeStatus = .signed
-            try await propose.save(on: req.db)
-        }
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -217,7 +213,6 @@ struct ProposeController: RouteCollection {
             propose.creatorDissolveSignature = input.signature
             propose.creatorDissolveTimestamp = input.timestamp
             if propose.proposeStatus == .proposed {
-                propose.proposeStatus = .dissolved
                 propose.dissolvedAt = input.timestamp
             }
             try await propose.save(on: req.db)
@@ -226,11 +221,12 @@ struct ProposeController: RouteCollection {
             counterparty!.dissolveTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
             if propose.proposeStatus == .proposed {
-                propose.proposeStatus = .dissolved
                 propose.dissolvedAt = input.timestamp
                 try await propose.save(on: req.db)
             }
         }
+
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -265,26 +261,17 @@ struct ProposeController: RouteCollection {
         let message = "honored." + propose.id!.uuidString + propose.contentHash + input.publicKey + input.timestamp
         try verifySignature(publicKey: input.publicKey, signature: input.signature, message: message)
 
-        let creatorHonored: Bool
         if isCreator {
             propose.honorCreatorSignature = input.signature
             propose.honorCreatorTimestamp = input.timestamp
             try await propose.save(on: req.db)
-            creatorHonored = true
         } else {
             counterparty!.honorSignature = input.signature
             counterparty!.honorTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
-            // Re-fetch from DB to avoid stale in-memory read of honorCreatorSignature
-            let refreshed = try await Propose.find(proposeID, on: req.db)
-            creatorHonored = refreshed?.honorCreatorSignature != nil
         }
 
-        // Auto-transition to honored when all participants have signed
-        if creatorHonored && propose.counterparties.allSatisfy({ $0.honorSignature != nil }) {
-            propose.proposeStatus = .honored
-            try await propose.save(on: req.db)
-        }
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
     }
@@ -331,19 +318,33 @@ struct ProposeController: RouteCollection {
         if isCreator {
             propose.partCreatorSignature = input.signature
             propose.partCreatorTimestamp = input.timestamp
+            try await propose.save(on: req.db)
         } else {
             counterparty!.partSignature = input.signature
             counterparty!.partTimestamp = input.timestamp
             try await counterparty!.save(on: req.db)
         }
 
-        // Transition to parted on first request; skip if already parted
-        if propose.proposeStatus == .signed {
-            propose.proposeStatus = .parted
-        }
-        try await propose.save(on: req.db)
+        try await recomputeAndSaveStatus(proposeID: proposeID, on: req.db)
 
         return .ok
+    }
+
+    // MARK: - Status Recomputation Helper
+
+    /// Re-fetches the Propose and all counterparties from DB, recomputes status from
+    /// the signatures actually present, and saves if the status changed.
+    private func recomputeAndSaveStatus(proposeID: UUID, on db: any Database) async throws {
+        guard let propose = try await Propose.query(on: db)
+            .filter(\.$id == proposeID)
+            .with(\.$counterparties)
+            .first() else { return }
+
+        let newStatus = SyncService.computeStatus(propose: propose, counterparties: propose.counterparties)
+        if propose.proposeStatus != newStatus {
+            propose.proposeStatus = newStatus
+            try await propose.save(on: db)
+        }
     }
 
     // MARK: - Signature Verification Helper
