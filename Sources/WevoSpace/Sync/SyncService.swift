@@ -8,13 +8,17 @@ actor SyncService {
     let peers: [String]
     let syncSecret: String?
     private var lastSyncAt: [String: Date] = [:]
+<<<<<<< HEAD
     private let peerClient: any SyncPeerFetching
     private let pageSize = 500
+=======
+>>>>>>> main
 
     init(app: Application, peers: [String], syncSecret: String?) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
+<<<<<<< HEAD
         self.peerClient = VaporSyncPeerClient(app: app, syncSecret: syncSecret)
     }
 
@@ -24,6 +28,8 @@ actor SyncService {
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = peerClient
+=======
+>>>>>>> main
     }
 
     func pullFromAllPeers() async {
@@ -32,6 +38,11 @@ actor SyncService {
         }
     }
 
+<<<<<<< HEAD
+=======
+    private let pageSize = 500
+
+>>>>>>> main
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
         // Buffer by 1 minute to handle clock skew between nodes
@@ -42,12 +53,16 @@ actor SyncService {
 
         do {
             while true {
+<<<<<<< HEAD
                 let page = try await peerClient.fetchProposes(
                     from: peerURL,
                     after: after,
                     limit: pageSize,
                     offset: offset
                 )
+=======
+                let page = try await fetchProposes(from: peerURL, after: after, offset: offset)
+>>>>>>> main
                 for propose in page {
                     try await SyncService.upsertPropose(propose, on: app.db)
                 }
@@ -68,6 +83,35 @@ actor SyncService {
         }
     }
 
+<<<<<<< HEAD
+=======
+    private func fetchProposes(from peerURL: String, after: Date?, offset: Int) async throws -> [ProposeResponse] {
+        var components = URLComponents(string: "\(peerURL)/v1/sync/proposes")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: "\(pageSize)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
+        ]
+        if let after {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            queryItems.append(URLQueryItem(name: "after", value: formatter.string(from: after)))
+        }
+        components.queryItems = queryItems
+        let urlString = components.url!.absoluteString
+
+        var headers = HTTPHeaders()
+        if let secret = syncSecret {
+            headers.bearerAuthorization = BearerAuthorization(token: secret)
+        }
+
+        let response = try await app.client.get(URI(string: urlString), headers: headers)
+        guard response.status == .ok else {
+            throw Abort(.serviceUnavailable, reason: "Peer \(peerURL) returned \(response.status)")
+        }
+        return try response.content.decode([ProposeResponse].self)
+    }
+
+>>>>>>> main
     // MARK: - Merge (static: no actor isolation needed, safe to call from anywhere)
 
     static func upsertPropose(_ incoming: ProposeResponse, on db: any Database) async throws {
