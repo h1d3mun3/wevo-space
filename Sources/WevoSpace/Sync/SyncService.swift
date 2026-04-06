@@ -121,38 +121,51 @@ actor SyncService {
         }
 
         for incomingCP in incoming.counterparties {
-            guard let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) else {
-                continue
-            }
-            var cpChanged = false
+            if let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) {
+                var cpChanged = false
 
-            if existingCP.signSignature == nil, let v = incomingCP.signSignature {
-                existingCP.signSignature = v; cpChanged = true
-            }
-            if existingCP.signTimestamp == nil, let v = incomingCP.signTimestamp {
-                existingCP.signTimestamp = v; cpChanged = true
-            }
-            if existingCP.honorSignature == nil, let v = incomingCP.honorSignature {
-                existingCP.honorSignature = v; cpChanged = true
-            }
-            if existingCP.honorTimestamp == nil, let v = incomingCP.honorTimestamp {
-                existingCP.honorTimestamp = v; cpChanged = true
-            }
-            if existingCP.partSignature == nil, let v = incomingCP.partSignature {
-                existingCP.partSignature = v; cpChanged = true
-            }
-            if existingCP.partTimestamp == nil, let v = incomingCP.partTimestamp {
-                existingCP.partTimestamp = v; cpChanged = true
-            }
-            if existingCP.dissolveSignature == nil, let v = incomingCP.dissolveSignature {
-                existingCP.dissolveSignature = v; cpChanged = true
-            }
-            if existingCP.dissolveTimestamp == nil, let v = incomingCP.dissolveTimestamp {
-                existingCP.dissolveTimestamp = v; cpChanged = true
-            }
+                if existingCP.signSignature == nil, let v = incomingCP.signSignature {
+                    existingCP.signSignature = v; cpChanged = true
+                }
+                if existingCP.signTimestamp == nil, let v = incomingCP.signTimestamp {
+                    existingCP.signTimestamp = v; cpChanged = true
+                }
+                if existingCP.honorSignature == nil, let v = incomingCP.honorSignature {
+                    existingCP.honorSignature = v; cpChanged = true
+                }
+                if existingCP.honorTimestamp == nil, let v = incomingCP.honorTimestamp {
+                    existingCP.honorTimestamp = v; cpChanged = true
+                }
+                if existingCP.partSignature == nil, let v = incomingCP.partSignature {
+                    existingCP.partSignature = v; cpChanged = true
+                }
+                if existingCP.partTimestamp == nil, let v = incomingCP.partTimestamp {
+                    existingCP.partTimestamp = v; cpChanged = true
+                }
+                if existingCP.dissolveSignature == nil, let v = incomingCP.dissolveSignature {
+                    existingCP.dissolveSignature = v; cpChanged = true
+                }
+                if existingCP.dissolveTimestamp == nil, let v = incomingCP.dissolveTimestamp {
+                    existingCP.dissolveTimestamp = v; cpChanged = true
+                }
 
-            if cpChanged {
-                try await existingCP.save(on: db)
+                if cpChanged {
+                    try await existingCP.save(on: db)
+                    changed = true
+                }
+            } else {
+                // Counterparty exists on peer but not locally — create from peer data
+                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: incomingCP.publicKey)
+                newCP.signSignature = incomingCP.signSignature
+                newCP.signTimestamp = incomingCP.signTimestamp
+                newCP.honorSignature = incomingCP.honorSignature
+                newCP.honorTimestamp = incomingCP.honorTimestamp
+                newCP.partSignature = incomingCP.partSignature
+                newCP.partTimestamp = incomingCP.partTimestamp
+                newCP.dissolveSignature = incomingCP.dissolveSignature
+                newCP.dissolveTimestamp = incomingCP.dissolveTimestamp
+                try await newCP.save(on: db)
+                existing.counterparties.append(newCP)
                 changed = true
             }
         }
