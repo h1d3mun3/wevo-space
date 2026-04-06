@@ -186,23 +186,23 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // Allow proposed (first party) or dissolved (second party recording their signature)
-        guard propose.proposeStatus == .proposed || propose.proposeStatus == .dissolved else {
-            throw Abort(.conflict, reason: "Only a propose in 'proposed' or 'dissolved' state can accept a dissolve signature (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can dissolve it")
         }
 
-        // Idempotent: already recorded for this party
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
         if isCreator && propose.creatorDissolveSignature != nil {
             return .ok
         }
         if let cp = counterparty, cp.dissolveSignature != nil {
             return .ok
+        }
+
+        // Allow proposed (first party) or dissolved (second party recording their signature)
+        guard propose.proposeStatus == .proposed || propose.proposeStatus == .dissolved else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' or 'dissolved' state can accept a dissolve signature (current: \(propose.status))")
         }
 
         // Signature verification (v1): "dissolved." + proposeId + contentHash + signerPublicKey + timestamp
@@ -292,23 +292,23 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        // Allow signed (first party) or parted (second party recording their signature)
-        guard propose.proposeStatus == .signed || propose.proposeStatus == .parted else {
-            throw Abort(.conflict, reason: "Only a propose in 'signed' or 'parted' state can accept a part signature (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can part it")
         }
 
-        // Idempotent: already recorded for this party
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
         if isCreator && propose.partCreatorSignature != nil {
             return .ok
         }
         if let cp = counterparty, cp.partSignature != nil {
             return .ok
+        }
+
+        // Allow signed (first party) or parted (second party recording their signature)
+        guard propose.proposeStatus == .signed || propose.proposeStatus == .parted else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' or 'parted' state can accept a part signature (current: \(propose.status))")
         }
 
         // Signature verification (v1): "parted." + proposeId + contentHash + signerPublicKey + timestamp
