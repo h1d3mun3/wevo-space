@@ -6,7 +6,7 @@ import FluentSQLiteDriver
 import Crypto
 import Foundation
 
-// MARK: - JWK Helper (テスト用)
+// MARK: - JWK Helper (for testing)
 private extension P256.Signing.PublicKey {
     var jwkString: String {
         let raw = rawRepresentation

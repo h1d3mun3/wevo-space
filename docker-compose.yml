@@ -10,6 +10,10 @@ services:
     environment:
       DATABASE_URL: postgres://vapor:${DB_PASSWORD}@postgres:5432/wevospace
       ENVIRONMENT: production
+      # Multi-node sync (optional — omit or leave blank for single-node deployments)
+      PEER_NODES: "${PEER_NODES:-}"
+      SYNC_SECRET: "${SYNC_SECRET:-}"
+      SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-60}"
     depends_on:
       postgres:
         condition: service_healthy

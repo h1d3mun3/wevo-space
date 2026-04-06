@@ -172,8 +172,8 @@ app.routes.defaultMaxBodySize = "1mb"
 
 - 日本語: [docs/PROPOSE_API_ja.md](docs/PROPOSE_API_ja.md)
 - English: [docs/PROPOSE_API.md](docs/PROPOSE_API.md)
-- OpenAPI (日本語): [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
-- OpenAPI (English): [api/propose-api.en.openapi.yaml](api/propose-api.en.openapi.yaml)
+- OpenAPI: [api/propose-api.openapi.yaml](api/propose-api.openapi.yaml)
+- OpenAPI (日本語): [api/propose-api.ja.openapi.yaml](api/propose-api.ja.openapi.yaml)
 
 ## 参考リンク
 

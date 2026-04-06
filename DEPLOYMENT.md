@@ -371,6 +371,126 @@ docker-compose logs -f app
 
 ---
 
+## Multi-Node Setup (High Availability)
+
+By default, WevoSpace runs as a single node. Multi-node mode is opt-in: set `PEER_NODES` and each node will periodically pull from its peers and merge new proposes. Because signatures are append-only, there are no conflicts — a node never overwrites a non-nil field.
+
+### Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `PEER_NODES` | Comma-separated URLs of peer nodes | *(unset — single-node)* |
+| `SYNC_SECRET` | Shared Bearer token for inter-node auth | *(unset — no auth required)* |
+| `SYNC_INTERVAL_SECONDS` | Pull interval in seconds | `60` |
+
+### Two-Node docker-compose Example
+
+```yaml
+version: '3.8'
+
+services:
+  node-a:
+    build: .
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://vapor:password@postgres-a:5432/wevospace
+      ENVIRONMENT: production
+      PEER_NODES: "http://node-b:8080"
+      SYNC_SECRET: "change-this-to-a-strong-secret"
+      SYNC_INTERVAL_SECONDS: "60"
+    depends_on:
+      - postgres-a
+
+  node-b:
+    build: .
+    restart: always
+    ports:
+      - "8081:8080"
+    environment:
+      DATABASE_URL: postgres://vapor:password@postgres-b:5432/wevospace
+      ENVIRONMENT: production
+      PEER_NODES: "http://node-a:8080"
+      SYNC_SECRET: "change-this-to-a-strong-secret"
+      SYNC_INTERVAL_SECONDS: "60"
+    depends_on:
+      - postgres-b
+
+  postgres-a:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: vapor
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: wevospace
+    volumes:
+      - postgres_a_data:/var/lib/postgresql/data
+
+  postgres-b:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: vapor
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: wevospace
+    volumes:
+      - postgres_b_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_a_data:
+  postgres_b_data:
+```
+
+Each node has its own PostgreSQL instance. Run migrations on each node before starting:
+
+```bash
+docker-compose run --rm node-a ./WevoSpace migrate --env production
+docker-compose run --rm node-b ./WevoSpace migrate --env production
+docker-compose up -d
+```
+
+### Adding a Third Node
+
+To add node-c to an existing node-a / node-b cluster:
+
+1. **Update all existing nodes** to include node-c in `PEER_NODES`:
+
+```bash
+# node-a: PEER_NODES=http://node-b:8080,http://node-c:8080
+# node-b: PEER_NODES=http://node-a:8080,http://node-c:8080
+```
+
+2. **Start node-c** with both existing nodes as peers:
+
+```bash
+# node-c: PEER_NODES=http://node-a:8080,http://node-b:8080
+```
+
+3. On first boot, node-c performs a full pull from all peers and catches up automatically. No manual data migration is needed.
+
+### Peer Discovery via `/info`
+
+Clients can call `GET /info` on any node to retrieve the list of peer nodes:
+
+```json
+{
+  "protocol": "wevo",
+  "version": "0.2.0",
+  "peers": ["https://node-b.example.com", "https://node-c.example.com"]
+}
+```
+
+The Wevo iOS/macOS client uses this to automatically discover all nodes when a Space is registered, enabling transparent failover to backup nodes if the primary is unavailable.
+
+### Security Recommendations for Multi-Node
+
+- Set `SYNC_SECRET` to a strong random value shared across all nodes. Without it, any host that can reach the sync endpoint can read and inject proposes.
+- Restrict access to `/v1/sync/` at the firewall or reverse proxy level so only peer nodes (not public internet) can reach it.
+- Use HTTPS between nodes in production.
+
+---
+
 ## Monitoring & Maintenance
 
 ### Health Check Endpoint
@@ -466,6 +586,7 @@ SELECT pg_reload_conf();
 Never expose the following:
 - `DATABASE_PASSWORD`
 - `DATABASE_URL`
+- `SYNC_SECRET` (inter-node authentication token)
 - Any other sensitive credentials
 
 ---

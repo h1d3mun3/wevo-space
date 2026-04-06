@@ -26,6 +26,21 @@ public func configure(_ app: Application) async throws {
 
     // register routes
     try routes(app)
+
+    // Node sync (optional — single-server mode when PEER_NODES is not set)
+    let peerNodes = (Environment.get("PEER_NODES") ?? "")
+        .split(separator: ",")
+        .map { String($0).trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+
+    if !peerNodes.isEmpty {
+        let syncSecret = Environment.get("SYNC_SECRET")
+        let syncInterval = Environment.get("SYNC_INTERVAL_SECONDS").flatMap(Double.init) ?? 60.0
+        let syncService = SyncService(app: app, peers: peerNodes, syncSecret: syncSecret)
+        app.syncService = syncService
+        app.lifecycle.use(SyncScheduler(syncService: syncService, interval: syncInterval))
+        app.logger.info("Node sync enabled: \(peerNodes.count) peer(s), interval \(Int(syncInterval))s")
+    }
 }
 
 // Switch database configuration based on environment
