@@ -58,7 +58,7 @@ actor SyncService {
                     offset: offset
                 )
                 for propose in page {
-                    try await SyncService.upsertPropose(propose, on: app.db)
+                    try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger)
                 }
                 totalMerged += page.count
                 // If fewer results than page size, we've reached the last page
@@ -91,24 +91,35 @@ actor SyncService {
 
     // MARK: - Merge (static: no actor isolation needed, safe to call from anywhere)
 
-    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database) async throws {
+    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
         if let existing = try await Propose.query(on: db)
             .filter(\.$id == incoming.id)
             .with(\.$counterparties)
             .first() {
-            try await mergeInto(existing: existing, incoming: incoming, on: db)
+            try await mergeInto(existing: existing, incoming: incoming, on: db, logger: logger)
         } else {
             try await createFrom(incoming: incoming, on: db)
         }
     }
 
-    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database) async throws {
+    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
         var changed = false
+        let proposeID = existing.id?.uuidString ?? "unknown"
 
         // For each nullable field: adopt received value only when local is nil.
-        // If both are non-nil but differ, this indicates a cryptographic inconsistency;
-        // we keep the local value and log nothing — the data will not converge, which
-        // is intentional (two distinct signatures for the same operation is a fraud signal).
+        // If both are non-nil but differ, this indicates a cryptographic inconsistency (fraud signal);
+        // we keep the local value — the data will not converge intentionally.
+        func checkConflict(field: String, local: String?, peer: String?) {
+            if let local, let peer, local != peer {
+                logger.warning("[Sync] Conflict detected — propose \(proposeID) field '\(field)': local and peer values differ (fraud signal)")
+            }
+        }
+
+        checkConflict(field: "honorCreatorSignature", local: existing.honorCreatorSignature, peer: incoming.honorCreatorSignature)
+        checkConflict(field: "partCreatorSignature", local: existing.partCreatorSignature, peer: incoming.partCreatorSignature)
+        checkConflict(field: "dissolvedAt", local: existing.dissolvedAt, peer: incoming.dissolvedAt)
+        checkConflict(field: "creatorDissolveSignature", local: existing.creatorDissolveSignature, peer: incoming.creatorDissolveSignature)
+
         if existing.honorCreatorSignature == nil, let v = incoming.honorCreatorSignature {
             existing.honorCreatorSignature = v; changed = true
         }
@@ -134,6 +145,12 @@ actor SyncService {
         for incomingCP in incoming.counterparties {
             if let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) {
                 var cpChanged = false
+                let cpKey = String(incomingCP.publicKey.prefix(16))
+
+                checkConflict(field: "counterparty[\(cpKey)].signSignature", local: existingCP.signSignature, peer: incomingCP.signSignature)
+                checkConflict(field: "counterparty[\(cpKey)].honorSignature", local: existingCP.honorSignature, peer: incomingCP.honorSignature)
+                checkConflict(field: "counterparty[\(cpKey)].partSignature", local: existingCP.partSignature, peer: incomingCP.partSignature)
+                checkConflict(field: "counterparty[\(cpKey)].dissolveSignature", local: existingCP.dissolveSignature, peer: incomingCP.dissolveSignature)
 
                 if existingCP.signSignature == nil, let v = incomingCP.signSignature {
                     existingCP.signSignature = v; cpChanged = true

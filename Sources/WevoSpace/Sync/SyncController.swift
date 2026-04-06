@@ -49,7 +49,7 @@ struct SyncController: RouteCollection {
 
         let incoming = try req.content.decode([ProposeResponse].self)
         for propose in incoming {
-            try await SyncService.upsertPropose(propose, on: req.db)
+            try await SyncService.upsertPropose(propose, on: req.db, logger: req.logger)
         }
         return .ok
     }

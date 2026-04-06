@@ -149,12 +149,17 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        guard propose.proposeStatus == .proposed else {
-            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
-        }
-
         guard let counterparty = propose.counterparties.first(where: { $0.publicKey == input.signerPublicKey }) else {
             throw Abort(.forbidden, reason: "Not a counterparty of this Propose")
+        }
+
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
+        if counterparty.signSignature != nil {
+            return .ok
+        }
+
+        guard propose.proposeStatus == .proposed else {
+            throw Abort(.conflict, reason: "Only a propose in 'proposed' state can be signed (current: \(propose.status))")
         }
 
         // Signature verification: "signed." + proposeId + contentHash + signerPublicKey + timestamp
@@ -247,14 +252,22 @@ struct ProposeController: RouteCollection {
             throw Abort(.notFound, reason: "Propose not found")
         }
 
-        guard propose.proposeStatus == .signed else {
-            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
-        }
-
         let isCreator = input.publicKey == propose.creatorPublicKey
         let counterparty = propose.counterparties.first { $0.publicKey == input.publicKey }
         guard isCreator || counterparty != nil else {
             throw Abort(.forbidden, reason: "Only a participant of this Propose can honor it")
+        }
+
+        // Idempotent: already recorded for this party (check before state machine to handle retries)
+        if isCreator && propose.honorCreatorSignature != nil {
+            return .ok
+        }
+        if let cp = counterparty, cp.honorSignature != nil {
+            return .ok
+        }
+
+        guard propose.proposeStatus == .signed else {
+            throw Abort(.conflict, reason: "Only a propose in 'signed' state can be honored (current: \(propose.status))")
         }
 
         // Signature verification (v1): "honored." + proposeId + contentHash + signerPublicKey + timestamp
