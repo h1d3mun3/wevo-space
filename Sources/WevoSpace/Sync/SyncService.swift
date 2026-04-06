@@ -34,16 +34,22 @@ actor SyncService {
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
 
+        // Load last checkpoint from DB; buffer by 1 minute to handle clock skew
+        let checkpoint: SyncCheckpoint?
         do {
-            // Load last checkpoint from DB; buffer by 1 minute to handle clock skew
-            let checkpoint = try await SyncCheckpoint.query(on: app.db)
+            checkpoint = try await SyncCheckpoint.query(on: app.db)
                 .filter(\.$peerURL == peerURL)
                 .first()
-            let after = checkpoint?.lastSyncAt.addingTimeInterval(-60)
+        } catch {
+            app.logger.error("[Sync] \(peerURL): failed to load checkpoint — \(error)")
+            return
+        }
+        let after = checkpoint?.lastSyncAt.addingTimeInterval(-60)
 
-            var offset = 0
-            var totalMerged = 0
+        var offset = 0
+        var totalMerged = 0
 
+        do {
             while true {
                 let page = try await peerClient.fetchProposes(
                     from: peerURL,
@@ -59,22 +65,27 @@ actor SyncService {
                 if page.count < pageSize { break }
                 offset += pageSize
             }
+        } catch {
+            // Peer unreachable or returned invalid data — skip and retry next cycle
+            app.logger.warning("[Sync] \(peerURL) skipped: \(error)")
+            return
+        }
 
-            // Persist checkpoint using start time so any Proposes created
-            // during this pull are captured in the next cycle
+        // Persist checkpoint using start time so any Proposes created
+        // during this pull are captured in the next cycle
+        do {
             if let existing = checkpoint {
                 existing.lastSyncAt = syncStartedAt
                 try await existing.save(on: app.db)
             } else {
                 try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: syncStartedAt).save(on: app.db)
             }
-
-            if totalMerged > 0 {
-                app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
-            }
         } catch {
-            // Unreachable peers are silently skipped; they will be retried next cycle
-            app.logger.warning("[Sync] \(peerURL) skipped: \(error.localizedDescription)")
+            app.logger.error("[Sync] \(peerURL): failed to persist checkpoint — \(error)")
+        }
+
+        if totalMerged > 0 {
+            app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
         }
     }
 
