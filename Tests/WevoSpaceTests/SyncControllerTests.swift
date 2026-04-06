@@ -229,6 +229,81 @@ struct SyncControllerTests {
         }
     }
 
+    @Test("Respects limit parameter")
+    func syncListRespectsLimit() async throws {
+        try await withApp { app in
+            try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                try req.content.encode([makePropose(), makePropose(), makePropose()])
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([ProposeResponse].self)
+                #expect(body.count == 2)
+            })
+        }
+    }
+
+    @Test("Respects offset parameter")
+    func syncListRespectsOffset() async throws {
+        try await withApp { app in
+            let first = makePropose()
+            let second = makePropose()
+            try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                try req.content.encode([first, second])
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=10&offset=1", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([ProposeResponse].self)
+                #expect(body.count == 1)
+            })
+        }
+    }
+
+    @Test("Paginates correctly across multiple pages")
+    func syncListPaginatesCorrectly() async throws {
+        try await withApp { app in
+            let proposes = (0..<5).map { _ in makePropose() }
+            try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                try req.content.encode(proposes)
+            }, afterResponse: { res async in #expect(res.status == .ok) })
+
+            // Page 1: limit=2, offset=0
+            var page1: [ProposeResponse] = []
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=0", afterResponse: { res async throws in
+                page1 = try res.content.decode([ProposeResponse].self)
+                #expect(page1.count == 2)
+            })
+
+            // Page 2: limit=2, offset=2
+            var page2: [ProposeResponse] = []
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=2", afterResponse: { res async throws in
+                page2 = try res.content.decode([ProposeResponse].self)
+                #expect(page2.count == 2)
+            })
+
+            // Page 3: limit=2, offset=4 — last page, 1 record
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=4", afterResponse: { res async throws in
+                let page3 = try res.content.decode([ProposeResponse].self)
+                #expect(page3.count == 1)
+            })
+
+            // No duplicates across pages
+            let allIDs = (page1 + page2).map(\.id)
+            #expect(Set(allIDs).count == allIDs.count)
+        }
+    }
+
+    @Test("Clamps limit to 1000 maximum")
+    func syncListClampsLimitToMax() async throws {
+        try await withApp { app in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=9999", afterResponse: { res async throws in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
     @Test("Returns 400 for invalid after parameter")
     func syncListInvalidAfterReturns400() async throws {
         try await withApp { app in

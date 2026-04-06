@@ -11,14 +11,21 @@ struct SyncController: RouteCollection {
     }
 
     // GET /v1/sync/proposes
-    // GET /v1/sync/proposes?after=<ISO8601>
+    // GET /v1/sync/proposes?after=<ISO8601>&limit=<int>&offset=<int>
     //
-    // Returns all Proposes updated after the given timestamp.
-    // Omit `after` to return all Proposes (used for initial pull / recovery).
+    // Returns Proposes updated after the given timestamp, in ascending updatedAt order.
+    // Supports pagination via limit (default 500, max 1000) and offset.
+    // Omit `after` to return all Proposes (used for initial pull / full recovery).
     func listProposes(req: Request) async throws -> [ProposeResponse] {
         try checkAuth(req)
 
-        var query = Propose.query(on: req.db).with(\.$counterparties)
+        let rawLimit = req.query[Int.self, at: "limit"] ?? 500
+        let limit = max(1, min(rawLimit, 1000))
+        let offset = max(0, req.query[Int.self, at: "offset"] ?? 0)
+
+        var query = Propose.query(on: req.db)
+            .with(\.$counterparties)
+            .sort(\.$updatedAt, .ascending)
 
         if let afterString = req.query[String.self, at: "after"] {
             let formatter = ISO8601DateFormatter()
@@ -29,7 +36,7 @@ struct SyncController: RouteCollection {
             query = query.filter(\.$updatedAt >= afterDate)
         }
 
-        let proposes = try await query.all()
+        let proposes = try await query.range(offset..<(offset + limit)).all()
         return try proposes.map { try ProposeResponse(from: $0) }
     }
 

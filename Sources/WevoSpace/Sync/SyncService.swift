@@ -21,21 +21,32 @@ actor SyncService {
         }
     }
 
+    private let pageSize = 500
+
     private func pullFromPeer(_ peerURL: String) async {
         let syncStartedAt = Date()
         // Buffer by 1 minute to handle clock skew between nodes
         let after = lastSyncAt[peerURL].map { $0.addingTimeInterval(-60) }
 
+        var offset = 0
+        var totalMerged = 0
+
         do {
-            let proposes = try await fetchProposes(from: peerURL, after: after)
-            for propose in proposes {
-                try await SyncService.upsertPropose(propose, on: app.db)
+            while true {
+                let page = try await fetchProposes(from: peerURL, after: after, offset: offset)
+                for propose in page {
+                    try await SyncService.upsertPropose(propose, on: app.db)
+                }
+                totalMerged += page.count
+                // If fewer results than page size, we've reached the last page
+                if page.count < pageSize { break }
+                offset += pageSize
             }
             // Record start time (not completion time) so any Proposes created
             // during this pull are captured in the next cycle
             lastSyncAt[peerURL] = syncStartedAt
-            if !proposes.isEmpty {
-                app.logger.info("[Sync] \(peerURL): merged \(proposes.count) propose(s)")
+            if totalMerged > 0 {
+                app.logger.info("[Sync] \(peerURL): merged \(totalMerged) propose(s)")
             }
         } catch {
             // Unreachable peers are silently skipped; they will be retried next cycle
@@ -43,13 +54,19 @@ actor SyncService {
         }
     }
 
-    private func fetchProposes(from peerURL: String, after: Date?) async throws -> [ProposeResponse] {
-        var urlString = "\(peerURL)/v1/sync/proposes"
+    private func fetchProposes(from peerURL: String, after: Date?, offset: Int) async throws -> [ProposeResponse] {
+        var components = URLComponents(string: "\(peerURL)/v1/sync/proposes")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: "\(pageSize)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
+        ]
         if let after {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime]
-            urlString += "?after=\(formatter.string(from: after))"
+            queryItems.append(URLQueryItem(name: "after", value: formatter.string(from: after)))
         }
+        components.queryItems = queryItems
+        let urlString = components.url!.absoluteString
 
         var headers = HTTPHeaders()
         if let secret = syncSecret {
