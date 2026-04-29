@@ -48,8 +48,9 @@ struct SyncController: RouteCollection {
         try checkAuth(req)
 
         let incoming = try req.content.decode([ProposeResponse].self)
+        let verifier = req.application.syncVerifier
         for propose in incoming {
-            try await SyncService.upsertPropose(propose, on: req.db, logger: req.logger)
+            try await SyncService.upsertPropose(propose, on: req.db, logger: req.logger, verifier: verifier)
         }
         return .ok
     }

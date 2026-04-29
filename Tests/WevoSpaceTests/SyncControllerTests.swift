@@ -10,6 +10,11 @@ struct SyncControllerTests {
 
     // MARK: - App Setup
 
+    /// Accepts every signature — lets batch tests use synthetic payloads without real crypto.
+    struct AcceptAllVerifier: SignatureVerifier {
+        func verify(signature: String, message: String, publicKey: String) -> Bool { true }
+    }
+
     private func withApp(
         syncSecret: String? = nil,
         test: (Application) async throws -> ()
@@ -24,6 +29,7 @@ struct SyncControllerTests {
         let app = try await Application.make(.testing)
         do {
             app.databases.use(.sqlite(.memory), as: .sqlite)
+            app.syncVerifier = AcceptAllVerifier()
             app.migrations.add(CreateProposesTable())
             app.migrations.add(CreateCounterpartiesTable())
             app.migrations.add(AddSignatureVersionAndResetProposes())

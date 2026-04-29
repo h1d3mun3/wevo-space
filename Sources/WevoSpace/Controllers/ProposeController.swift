@@ -1,7 +1,5 @@
 import Fluent
 import Vapor
-import Crypto
-import Foundation
 
 // Response DTO including counterparty details
 struct ProposeResponse: Content {
@@ -360,61 +358,15 @@ struct ProposeController: RouteCollection {
 
     // MARK: - Signature Verification Helper
 
-    private func verifySignature(publicKey jwkString: String, signature: String, message: String) throws {
-        guard let jsonData = jwkString.data(using: .utf8),
+    private func verifySignature(publicKey: String, signature: String, message: String) throws {
+        guard let jsonData = publicKey.data(using: .utf8),
               let jwk = try? JSONDecoder().decode(JWKPublicKey.self, from: jsonData),
-              let xData = Data(base64URLEncoded: jwk.x),
-              let yData = Data(base64URLEncoded: jwk.y) else {
+              Data(base64URLEncoded: jwk.x) != nil,
+              Data(base64URLEncoded: jwk.y) != nil else {
             throw Abort(.badRequest, reason: "Invalid JWK public key format")
         }
-
-        var x963 = Data([0x04])
-        x963.append(contentsOf: xData)
-        x963.append(contentsOf: yData)
-
-        guard let signatureData = Data(base64Encoded: signature) else {
-            throw Abort(.badRequest, reason: "Failed to Base64-decode the signature")
-        }
-
-        guard let messageData = message.data(using: .utf8) else {
-            throw Abort(.badRequest, reason: "Failed to encode the message")
-        }
-
-        let publicKeyObj: P256.Signing.PublicKey
-        do {
-            publicKeyObj = try P256.Signing.PublicKey(x963Representation: x963)
-        } catch {
-            throw Abort(.badRequest, reason: "Invalid public key format")
-        }
-
-        let ecdsaSignature: P256.Signing.ECDSASignature
-        do {
-            ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signatureData)
-        } catch {
-            throw Abort(.badRequest, reason: "Invalid signature format")
-        }
-
-        guard publicKeyObj.isValidSignature(ecdsaSignature, for: messageData) else {
+        guard P256SignatureVerifier().verify(signature: signature, message: message, publicKey: publicKey) else {
             throw Abort(.unauthorized, reason: "Signature verification failed")
         }
-    }
-}
-
-// MARK: - JWK Helpers
-
-private struct JWKPublicKey: Decodable {
-    let x: String
-    let y: String
-}
-
-private extension Data {
-    /// Base64URL decoding ('-' → '+', '_' → '/', restores padding)
-    init?(base64URLEncoded string: String) {
-        var s = string
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        let remainder = s.count % 4
-        if remainder > 0 { s += String(repeating: "=", count: 4 - remainder) }
-        self.init(base64Encoded: s)
     }
 }
