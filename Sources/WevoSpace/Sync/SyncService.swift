@@ -8,21 +8,24 @@ actor SyncService {
     let peers: [String]
     let syncSecret: String?
     private let peerClient: any SyncPeerFetching
+    private let verifier: any SignatureVerifier
     private let pageSize = 500
 
-    init(app: Application, peers: [String], syncSecret: String?) {
+    init(app: Application, peers: [String], syncSecret: String?, verifier: any SignatureVerifier = P256SignatureVerifier()) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = VaporSyncPeerClient(app: app, syncSecret: syncSecret)
+        self.verifier = verifier
     }
 
-    /// Initializer for testing: accepts an injected SyncPeerFetching implementation.
-    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching) {
+    /// Initializer for testing: accepts injected SyncPeerFetching and SignatureVerifier implementations.
+    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching, verifier: any SignatureVerifier = P256SignatureVerifier()) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = peerClient
+        self.verifier = verifier
     }
 
     func pullFromAllPeers() async {
@@ -58,7 +61,7 @@ actor SyncService {
                     offset: offset
                 )
                 for propose in page {
-                    try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger)
+                    try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger, verifier: self.verifier)
                 }
                 totalMerged += page.count
                 // If fewer results than page size, we've reached the last page
@@ -91,107 +94,179 @@ actor SyncService {
 
     // MARK: - Merge (static: no actor isolation needed, safe to call from anywhere)
 
-    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
+    static func upsertPropose(_ incoming: ProposeResponse, on db: any Database, logger: Logger, verifier: any SignatureVerifier = P256SignatureVerifier()) async throws {
         if let existing = try await Propose.query(on: db)
             .filter(\.$id == incoming.id)
             .with(\.$counterparties)
             .first() {
-            try await mergeInto(existing: existing, incoming: incoming, on: db, logger: logger)
+            try await mergeInto(existing: existing, incoming: incoming, on: db, logger: logger, verifier: verifier)
         } else {
-            try await createFrom(incoming: incoming, on: db)
+            try await createFrom(incoming: incoming, on: db, logger: logger, verifier: verifier)
         }
     }
 
-    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger) async throws {
+    private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger, verifier: any SignatureVerifier) async throws {
         var changed = false
-        let proposeID = existing.id?.uuidString ?? "unknown"
+        let idStr = incoming.id.uuidString
+        let hash = incoming.contentHash
+        let creatorKey = incoming.creatorPublicKey
 
-        // For each nullable field: adopt received value only when local is nil.
-        // If both are non-nil but differ, this indicates a cryptographic inconsistency (fraud signal);
-        // we keep the local value — the data will not converge intentionally.
-        func checkConflict(field: String, local: String?, peer: String?) {
-            if let local, let peer, local != peer {
-                logger.warning("[Sync] Conflict detected — propose \(proposeID) field '\(field)': local and peer values differ (fraud signal)")
+        // Verifies an incoming signature+timestamp pair against the local value.
+        // Returns (sig, ts) to adopt when local is nil and the incoming signature is valid.
+        // When both local and peer have a value, verifies the peer and logs the outcome — but always keeps local.
+        func adopt(
+            localSig: String?, localTs: String?,
+            peerSig: String?, peerTs: String?,
+            message: (String) -> String,
+            publicKey: String,
+            field: String
+        ) -> (sig: String, ts: String)? {
+            guard let peerSig else { return nil }
+            guard localSig == nil else {
+                if localSig != peerSig {
+                    if let ts = peerTs {
+                        if verifier.verify(signature: peerSig, message: message(ts), publicKey: publicKey) {
+                            logger.warning("[Sync] propose \(idStr) '\(field)': both valid — keeping local (first-writer wins)")
+                        } else {
+                            logger.warning("[Sync] propose \(idStr) '\(field)': peer signature invalid — keeping local")
+                        }
+                    } else {
+                        logger.warning("[Sync] propose \(idStr) '\(field)': peer signature has no timestamp — keeping local")
+                    }
+                }
+                return nil
             }
+            guard let ts = peerTs else {
+                logger.warning("[Sync] propose \(idStr) '\(field)': signature present but timestamp missing — rejected")
+                return nil
+            }
+            if verifier.verify(signature: peerSig, message: message(ts), publicKey: publicKey) {
+                return (peerSig, ts)
+            }
+            logger.warning("[Sync] propose \(idStr) '\(field)': invalid signature from peer — rejected")
+            return nil
         }
 
-        checkConflict(field: "honorCreatorSignature", local: existing.honorCreatorSignature, peer: incoming.honorCreatorSignature)
-        checkConflict(field: "partCreatorSignature", local: existing.partCreatorSignature, peer: incoming.partCreatorSignature)
-        checkConflict(field: "dissolvedAt", local: existing.dissolvedAt, peer: incoming.dissolvedAt)
-        checkConflict(field: "creatorDissolveSignature", local: existing.creatorDissolveSignature, peer: incoming.creatorDissolveSignature)
+        if let a = adopt(
+            localSig: existing.honorCreatorSignature, localTs: existing.honorCreatorTimestamp,
+            peerSig: incoming.honorCreatorSignature, peerTs: incoming.honorCreatorTimestamp,
+            message: { ts in "honored.\(idStr)\(hash)\(creatorKey)\(ts)" },
+            publicKey: creatorKey, field: "honorCreatorSignature"
+        ) {
+            existing.honorCreatorSignature = a.sig
+            existing.honorCreatorTimestamp = a.ts
+            changed = true
+        }
 
-        if existing.honorCreatorSignature == nil, let v = incoming.honorCreatorSignature {
-            existing.honorCreatorSignature = v; changed = true
+        if let a = adopt(
+            localSig: existing.partCreatorSignature, localTs: existing.partCreatorTimestamp,
+            peerSig: incoming.partCreatorSignature, peerTs: incoming.partCreatorTimestamp,
+            message: { ts in "parted.\(idStr)\(hash)\(creatorKey)\(ts)" },
+            publicKey: creatorKey, field: "partCreatorSignature"
+        ) {
+            existing.partCreatorSignature = a.sig
+            existing.partCreatorTimestamp = a.ts
+            changed = true
         }
-        if existing.honorCreatorTimestamp == nil, let v = incoming.honorCreatorTimestamp {
-            existing.honorCreatorTimestamp = v; changed = true
-        }
-        if existing.partCreatorSignature == nil, let v = incoming.partCreatorSignature {
-            existing.partCreatorSignature = v; changed = true
-        }
-        if existing.partCreatorTimestamp == nil, let v = incoming.partCreatorTimestamp {
-            existing.partCreatorTimestamp = v; changed = true
-        }
+
         if existing.dissolvedAt == nil, let v = incoming.dissolvedAt {
             existing.dissolvedAt = v; changed = true
         }
-        if existing.creatorDissolveSignature == nil, let v = incoming.creatorDissolveSignature {
-            existing.creatorDissolveSignature = v; changed = true
-        }
-        if existing.creatorDissolveTimestamp == nil, let v = incoming.creatorDissolveTimestamp {
-            existing.creatorDissolveTimestamp = v; changed = true
+
+        if let a = adopt(
+            localSig: existing.creatorDissolveSignature, localTs: existing.creatorDissolveTimestamp,
+            peerSig: incoming.creatorDissolveSignature, peerTs: incoming.creatorDissolveTimestamp,
+            message: { ts in "dissolved.\(idStr)\(hash)\(creatorKey)\(ts)" },
+            publicKey: creatorKey, field: "creatorDissolveSignature"
+        ) {
+            existing.creatorDissolveSignature = a.sig
+            existing.creatorDissolveTimestamp = a.ts
+            changed = true
         }
 
         for incomingCP in incoming.counterparties {
             if let existingCP = existing.counterparties.first(where: { $0.publicKey == incomingCP.publicKey }) {
                 var cpChanged = false
-                let cpKey = String(incomingCP.publicKey.prefix(16))
+                let cpKey = incomingCP.publicKey
+                let cpPrefix = String(cpKey.prefix(16))
 
-                checkConflict(field: "counterparty[\(cpKey)].signSignature", local: existingCP.signSignature, peer: incomingCP.signSignature)
-                checkConflict(field: "counterparty[\(cpKey)].honorSignature", local: existingCP.honorSignature, peer: incomingCP.honorSignature)
-                checkConflict(field: "counterparty[\(cpKey)].partSignature", local: existingCP.partSignature, peer: incomingCP.partSignature)
-                checkConflict(field: "counterparty[\(cpKey)].dissolveSignature", local: existingCP.dissolveSignature, peer: incomingCP.dissolveSignature)
+                func adoptCP(
+                    localSig: String?, localTs: String?,
+                    peerSig: String?, peerTs: String?,
+                    message: (String) -> String,
+                    field: String
+                ) -> (sig: String, ts: String)? {
+                    adopt(
+                        localSig: localSig, localTs: localTs,
+                        peerSig: peerSig, peerTs: peerTs,
+                        message: message, publicKey: cpKey,
+                        field: "counterparty[\(cpPrefix)].\(field)"
+                    )
+                }
 
-                if existingCP.signSignature == nil, let v = incomingCP.signSignature {
-                    existingCP.signSignature = v; cpChanged = true
-                }
-                if existingCP.signTimestamp == nil, let v = incomingCP.signTimestamp {
-                    existingCP.signTimestamp = v; cpChanged = true
-                }
-                if existingCP.honorSignature == nil, let v = incomingCP.honorSignature {
-                    existingCP.honorSignature = v; cpChanged = true
-                }
-                if existingCP.honorTimestamp == nil, let v = incomingCP.honorTimestamp {
-                    existingCP.honorTimestamp = v; cpChanged = true
-                }
-                if existingCP.partSignature == nil, let v = incomingCP.partSignature {
-                    existingCP.partSignature = v; cpChanged = true
-                }
-                if existingCP.partTimestamp == nil, let v = incomingCP.partTimestamp {
-                    existingCP.partTimestamp = v; cpChanged = true
-                }
-                if existingCP.dissolveSignature == nil, let v = incomingCP.dissolveSignature {
-                    existingCP.dissolveSignature = v; cpChanged = true
-                }
-                if existingCP.dissolveTimestamp == nil, let v = incomingCP.dissolveTimestamp {
-                    existingCP.dissolveTimestamp = v; cpChanged = true
-                }
+                if let a = adoptCP(
+                    localSig: existingCP.signSignature, localTs: existingCP.signTimestamp,
+                    peerSig: incomingCP.signSignature, peerTs: incomingCP.signTimestamp,
+                    message: { ts in "signed.\(idStr)\(hash)\(cpKey)\(ts)" },
+                    field: "signSignature"
+                ) { existingCP.signSignature = a.sig; existingCP.signTimestamp = a.ts; cpChanged = true }
+
+                if let a = adoptCP(
+                    localSig: existingCP.honorSignature, localTs: existingCP.honorTimestamp,
+                    peerSig: incomingCP.honorSignature, peerTs: incomingCP.honorTimestamp,
+                    message: { ts in "honored.\(idStr)\(hash)\(cpKey)\(ts)" },
+                    field: "honorSignature"
+                ) { existingCP.honorSignature = a.sig; existingCP.honorTimestamp = a.ts; cpChanged = true }
+
+                if let a = adoptCP(
+                    localSig: existingCP.partSignature, localTs: existingCP.partTimestamp,
+                    peerSig: incomingCP.partSignature, peerTs: incomingCP.partTimestamp,
+                    message: { ts in "parted.\(idStr)\(hash)\(cpKey)\(ts)" },
+                    field: "partSignature"
+                ) { existingCP.partSignature = a.sig; existingCP.partTimestamp = a.ts; cpChanged = true }
+
+                if let a = adoptCP(
+                    localSig: existingCP.dissolveSignature, localTs: existingCP.dissolveTimestamp,
+                    peerSig: incomingCP.dissolveSignature, peerTs: incomingCP.dissolveTimestamp,
+                    message: { ts in "dissolved.\(idStr)\(hash)\(cpKey)\(ts)" },
+                    field: "dissolveSignature"
+                ) { existingCP.dissolveSignature = a.sig; existingCP.dissolveTimestamp = a.ts; cpChanged = true }
 
                 if cpChanged {
                     try await existingCP.save(on: db)
                     changed = true
                 }
             } else {
-                // Counterparty exists on peer but not locally — create from peer data
-                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: incomingCP.publicKey)
-                newCP.signSignature = incomingCP.signSignature
-                newCP.signTimestamp = incomingCP.signTimestamp
-                newCP.honorSignature = incomingCP.honorSignature
-                newCP.honorTimestamp = incomingCP.honorTimestamp
-                newCP.partSignature = incomingCP.partSignature
-                newCP.partTimestamp = incomingCP.partTimestamp
-                newCP.dissolveSignature = incomingCP.dissolveSignature
-                newCP.dissolveTimestamp = incomingCP.dissolveTimestamp
+                // Counterparty exists on peer but not locally — create and verify each signature
+                let cpKey = incomingCP.publicKey
+                let cpPrefix = String(cpKey.prefix(16))
+                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: cpKey)
+
+                func adoptNewCP(sig: String?, ts: String?, prefix: String, message: (String) -> String) -> (sig: String, ts: String)? {
+                    guard let sig, let ts else { return nil }
+                    let msg = message(ts)
+                    if verifier.verify(signature: sig, message: msg, publicKey: cpKey) { return (sig, ts) }
+                    logger.warning("[Sync] propose \(idStr): invalid \(prefix) for new counterparty \(cpPrefix) — rejected")
+                    return nil
+                }
+
+                if let a = adoptNewCP(sig: incomingCP.signSignature, ts: incomingCP.signTimestamp, prefix: "signSignature",
+                                      message: { ts in "signed.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                    newCP.signSignature = a.sig; newCP.signTimestamp = a.ts
+                }
+                if let a = adoptNewCP(sig: incomingCP.honorSignature, ts: incomingCP.honorTimestamp, prefix: "honorSignature",
+                                      message: { ts in "honored.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                    newCP.honorSignature = a.sig; newCP.honorTimestamp = a.ts
+                }
+                if let a = adoptNewCP(sig: incomingCP.partSignature, ts: incomingCP.partTimestamp, prefix: "partSignature",
+                                      message: { ts in "parted.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                    newCP.partSignature = a.sig; newCP.partTimestamp = a.ts
+                }
+                if let a = adoptNewCP(sig: incomingCP.dissolveSignature, ts: incomingCP.dissolveTimestamp, prefix: "dissolveSignature",
+                                      message: { ts in "dissolved.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                    newCP.dissolveSignature = a.sig; newCP.dissolveTimestamp = a.ts
+                }
+
                 try await newCP.save(on: db)
                 existing.counterparties.append(newCP)
                 changed = true
@@ -204,34 +279,79 @@ actor SyncService {
         }
     }
 
-    private static func createFrom(incoming: ProposeResponse, on db: any Database) async throws {
+    private static func createFrom(incoming: ProposeResponse, on db: any Database, logger: Logger, verifier: any SignatureVerifier) async throws {
+        let idStr = incoming.id.uuidString
+        let hash = incoming.contentHash
+        let creatorKey = incoming.creatorPublicKey
+
+        // Verify creation signature before persisting anything
+        let sortedKeys = incoming.counterparties.map { $0.publicKey }.sorted().joined()
+        let createMsg = "proposed.\(idStr)\(hash)\(creatorKey)\(sortedKeys)\(incoming.createdAt)"
+        guard verifier.verify(signature: incoming.creatorSignature, message: createMsg, publicKey: creatorKey) else {
+            logger.warning("[Sync] propose \(idStr): invalid creatorSignature — skipped")
+            return
+        }
+
         let propose = Propose(
             id: incoming.id,
-            contentHash: incoming.contentHash,
-            creatorPublicKey: incoming.creatorPublicKey,
+            contentHash: hash,
+            creatorPublicKey: creatorKey,
             creatorSignature: incoming.creatorSignature,
             createdAt: incoming.createdAt,
             signatureVersion: incoming.signatureVersion
         )
-        propose.honorCreatorSignature = incoming.honorCreatorSignature
-        propose.honorCreatorTimestamp = incoming.honorCreatorTimestamp
-        propose.partCreatorSignature = incoming.partCreatorSignature
-        propose.partCreatorTimestamp = incoming.partCreatorTimestamp
-        propose.dissolvedAt = incoming.dissolvedAt
-        propose.creatorDissolveSignature = incoming.creatorDissolveSignature
-        propose.creatorDissolveTimestamp = incoming.creatorDissolveTimestamp
 
-        let counterparties = incoming.counterparties.map { cp -> ProposeCounterparty in
-            let counterparty = ProposeCounterparty(proposeID: incoming.id, publicKey: cp.publicKey)
-            counterparty.signSignature = cp.signSignature
-            counterparty.signTimestamp = cp.signTimestamp
-            counterparty.honorSignature = cp.honorSignature
-            counterparty.honorTimestamp = cp.honorTimestamp
-            counterparty.partSignature = cp.partSignature
-            counterparty.partTimestamp = cp.partTimestamp
-            counterparty.dissolveSignature = cp.dissolveSignature
-            counterparty.dissolveTimestamp = cp.dissolveTimestamp
-            return counterparty
+        func verifyAndSet(sig: String?, ts: String?, message: (String) -> String, field: String) -> (sig: String, ts: String)? {
+            guard let sig, let ts else { return nil }
+            if verifier.verify(signature: sig, message: message(ts), publicKey: creatorKey) { return (sig, ts) }
+            logger.warning("[Sync] propose \(idStr): invalid \(field) — skipped")
+            return nil
+        }
+
+        if let a = verifyAndSet(sig: incoming.honorCreatorSignature, ts: incoming.honorCreatorTimestamp,
+                                message: { ts in "honored.\(idStr)\(hash)\(creatorKey)\(ts)" }, field: "honorCreatorSignature") {
+            propose.honorCreatorSignature = a.sig; propose.honorCreatorTimestamp = a.ts
+        }
+        if let a = verifyAndSet(sig: incoming.partCreatorSignature, ts: incoming.partCreatorTimestamp,
+                                message: { ts in "parted.\(idStr)\(hash)\(creatorKey)\(ts)" }, field: "partCreatorSignature") {
+            propose.partCreatorSignature = a.sig; propose.partCreatorTimestamp = a.ts
+        }
+        if let a = verifyAndSet(sig: incoming.creatorDissolveSignature, ts: incoming.creatorDissolveTimestamp,
+                                message: { ts in "dissolved.\(idStr)\(hash)\(creatorKey)\(ts)" }, field: "creatorDissolveSignature") {
+            propose.creatorDissolveSignature = a.sig; propose.creatorDissolveTimestamp = a.ts
+        }
+        propose.dissolvedAt = incoming.dissolvedAt
+
+        var counterparties: [ProposeCounterparty] = []
+        for cp in incoming.counterparties {
+            let cpKey = cp.publicKey
+            let counterparty = ProposeCounterparty(proposeID: incoming.id, publicKey: cpKey)
+
+            func verifyCP(sig: String?, ts: String?, prefix: String, message: (String) -> String) -> (sig: String, ts: String)? {
+                guard let sig, let ts else { return nil }
+                if verifier.verify(signature: sig, message: message(ts), publicKey: cpKey) { return (sig, ts) }
+                logger.warning("[Sync] propose \(idStr): invalid counterparty \(prefix) for \(String(cpKey.prefix(16))) — skipped")
+                return nil
+            }
+
+            if let a = verifyCP(sig: cp.signSignature, ts: cp.signTimestamp, prefix: "signSignature",
+                                message: { ts in "signed.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                counterparty.signSignature = a.sig; counterparty.signTimestamp = a.ts
+            }
+            if let a = verifyCP(sig: cp.honorSignature, ts: cp.honorTimestamp, prefix: "honorSignature",
+                                message: { ts in "honored.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                counterparty.honorSignature = a.sig; counterparty.honorTimestamp = a.ts
+            }
+            if let a = verifyCP(sig: cp.partSignature, ts: cp.partTimestamp, prefix: "partSignature",
+                                message: { ts in "parted.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                counterparty.partSignature = a.sig; counterparty.partTimestamp = a.ts
+            }
+            if let a = verifyCP(sig: cp.dissolveSignature, ts: cp.dissolveTimestamp, prefix: "dissolveSignature",
+                                message: { ts in "dissolved.\(idStr)\(hash)\(cpKey)\(ts)" }) {
+                counterparty.dissolveSignature = a.sig; counterparty.dissolveTimestamp = a.ts
+            }
+
+            counterparties.append(counterparty)
         }
 
         propose.proposeStatus = computeStatus(propose: propose, counterparties: counterparties)
@@ -272,5 +392,16 @@ extension Application {
 
     private struct SyncServiceKey: StorageKey {
         typealias Value = SyncService
+    }
+
+    /// Verifier used by the batch sync endpoint. Defaults to P256SignatureVerifier.
+    /// Override in tests to inject a permissive verifier for synthetic payloads.
+    var syncVerifier: any SignatureVerifier {
+        get { storage[SyncVerifierKey.self] ?? P256SignatureVerifier() }
+        set { storage[SyncVerifierKey.self] = newValue }
+    }
+
+    private struct SyncVerifierKey: StorageKey {
+        typealias Value = any SignatureVerifier
     }
 }
