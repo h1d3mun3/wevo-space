@@ -30,6 +30,7 @@ struct RequestSizeLimitTests {
         let app = try await Application.make(.testing)
         do {
             app.databases.use(.sqlite(.memory), as: .sqlite)
+            app.middleware.use(RequestSizeLimitMiddleware(maxBytes: 1_000_000))
             app.routes.defaultMaxBodySize = "1mb"
             app.migrations.add(CreateProposesTable())
             app.migrations.add(CreateCounterpartiesTable())
