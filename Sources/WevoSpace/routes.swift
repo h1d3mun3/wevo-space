@@ -27,7 +27,7 @@ func routes(_ app: Application) throws {
     app.get("info") { req async -> InfoResponse in
         return InfoResponse(
             protocolName: "wevo",
-            version: "0.2.0",
+            version: "0.3.0",
             peers: app.syncService?.peers ?? []
         )
     }
