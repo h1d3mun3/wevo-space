@@ -10,6 +10,8 @@ public func configure(_ app: Application) async throws {
     // app.middleware.use(FileMiddleware(publicDirectory: app.directory.publicDirectory))
 
     // Request size limit: up to 1 MB
+    // Middleware covers VaporTesting (pre-collected ByteBuffer); defaultMaxBodySize covers streaming bodies.
+    app.middleware.use(RequestSizeLimitMiddleware(maxBytes: 1_000_000))
     app.routes.defaultMaxBodySize = "1mb"
 
     // Rate limiting: up to 60 requests per minute
