@@ -93,6 +93,14 @@ The string to sign for each operation is formed by concatenating the following f
 >
 > For **create**, sort `counterpartyPublicKeys` lexicographically and join them (no separator) before signing.
 
+### Timestamp Trust Boundary
+
+Timestamps (`createdAt`, `timestamp` fields) are included in the signed message, so they **cannot be tampered with after signing**. However, the value itself is asserted by the signing client and is not verified against a trusted time source.
+
+A client with a manipulated system clock can submit an arbitrary timestamp that passes signature verification. The server accepts any timestamp that is part of a valid signature.
+
+This is a known design trade-off: the standard remedy (a trusted timestamp authority, RFC 3161) would introduce an external dependency that conflicts with Wevo's principle of not relying on third-party infrastructure. Any future time-based feature (e.g., expiry) must account for this limitation.
+
 ---
 
 ## Endpoints
