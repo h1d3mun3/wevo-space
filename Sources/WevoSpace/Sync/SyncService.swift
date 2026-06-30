@@ -108,8 +108,18 @@ actor SyncService {
     private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger, verifier: any SignatureVerifier) async throws {
         var changed = false
         let idStr = incoming.id.uuidString
-        let hash = incoming.contentHash
-        let creatorKey = incoming.creatorPublicKey
+
+        // A propose's identity — creator key and content hash — is fixed at creation and bound by
+        // the creator signature. Never merge a record that disagrees on these (forgery or ID
+        // collision), and always derive signature messages from the LOCAL stored values so a peer
+        // cannot substitute a different creatorKey/hash to make its own signatures verify.
+        guard incoming.creatorPublicKey == existing.creatorPublicKey,
+              incoming.contentHash == existing.contentHash else {
+            logger.warning("[Sync] propose \(idStr): creatorPublicKey/contentHash mismatch — merge rejected")
+            return
+        }
+        let hash = existing.contentHash
+        let creatorKey = existing.creatorPublicKey
 
         // Verifies an incoming signature+timestamp pair against the local value.
         // Returns (sig, ts) to adopt when local is nil and the incoming signature is valid.
@@ -169,9 +179,10 @@ actor SyncService {
             changed = true
         }
 
-        if existing.dissolvedAt == nil, let v = incoming.dissolvedAt {
-            existing.dissolvedAt = v; changed = true
-        }
+        // NOTE: incoming.dissolvedAt is deliberately NOT adopted here. It is a peer-supplied
+        // string that previously drove the .dissolved status with no signature behind it. The
+        // dissolved state is now derived from verified dissolve signatures (see computeStatus),
+        // and dissolvedAt is recomputed from verified timestamps below (deriveDissolvedAt).
 
         if let a = adopt(
             localSig: existing.creatorDissolveSignature, localTs: existing.creatorDissolveTimestamp,
@@ -237,43 +248,21 @@ actor SyncService {
                     changed = true
                 }
             } else {
-                // Counterparty exists on peer but not locally — create and verify each signature
-                let cpKey = incomingCP.publicKey
-                let cpPrefix = String(cpKey.prefix(16))
-                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: cpKey)
-
-                func adoptNewCP(sig: String?, ts: String?, prefix: String, message: (String) -> String) -> (sig: String, ts: String)? {
-                    guard let sig, let ts else { return nil }
-                    let msg = message(ts)
-                    if verifier.verify(signature: sig, message: msg, publicKey: cpKey) { return (sig, ts) }
-                    logger.warning("[Sync] propose \(idStr): invalid \(prefix) for new counterparty \(cpPrefix) — rejected")
-                    return nil
-                }
-
-                if let a = adoptNewCP(sig: incomingCP.signSignature, ts: incomingCP.signTimestamp, prefix: "signSignature",
-                                      message: { ts in "signed.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.signSignature = a.sig; newCP.signTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.honorSignature, ts: incomingCP.honorTimestamp, prefix: "honorSignature",
-                                      message: { ts in "honored.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.honorSignature = a.sig; newCP.honorTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.partSignature, ts: incomingCP.partTimestamp, prefix: "partSignature",
-                                      message: { ts in "parted.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.partSignature = a.sig; newCP.partTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.dissolveSignature, ts: incomingCP.dissolveTimestamp, prefix: "dissolveSignature",
-                                      message: { ts in "dissolved.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.dissolveSignature = a.sig; newCP.dissolveTimestamp = a.ts
-                }
-
-                try await newCP.save(on: db)
-                existing.counterparties.append(newCP)
-                changed = true
+                // Counterparty present on the peer but not locally — REJECT it. The counterparty
+                // set is fixed at creation: the creator-signature message embeds the sorted
+                // counterparty keys (see createFrom / ProposeController.create), so a legitimate
+                // propose never gains members afterward. Accepting a peer-supplied member would let
+                // a rogue node inject an unsigned "phantom" counterparty (which breaks the
+                // allSatisfy checks in computeStatus and permanently downgrades honored/signed
+                // proposes back to .proposed) or a self-signed key (forging .parted/.dissolved on
+                // someone else's agreement). Membership is never re-bound to the creator signature
+                // here, so the only safe action is to skip.
+                logger.warning("[Sync] propose \(idStr): counterparty \(String(incomingCP.publicKey.prefix(16))) is not in the creator-signed set — rejected")
             }
         }
 
         if changed {
+            existing.dissolvedAt = deriveDissolvedAt(propose: existing, counterparties: existing.counterparties)
             existing.proposeStatus = computeStatus(propose: existing, counterparties: existing.counterparties)
             try await existing.save(on: db)
         }
@@ -320,7 +309,7 @@ actor SyncService {
                                 message: { ts in "dissolved.\(idStr)\(hash)\(creatorKey)\(ts)" }, field: "creatorDissolveSignature") {
             propose.creatorDissolveSignature = a.sig; propose.creatorDissolveTimestamp = a.ts
         }
-        propose.dissolvedAt = incoming.dissolvedAt
+        // dissolvedAt is derived from verified dissolve signatures below, never copied from the peer.
 
         var counterparties: [ProposeCounterparty] = []
         for cp in incoming.counterparties {
@@ -354,6 +343,7 @@ actor SyncService {
             counterparties.append(counterparty)
         }
 
+        propose.dissolvedAt = deriveDissolvedAt(propose: propose, counterparties: counterparties)
         propose.proposeStatus = computeStatus(propose: propose, counterparties: counterparties)
         try await propose.save(on: db)
         for cp in counterparties {
@@ -372,13 +362,32 @@ actor SyncService {
         if propose.partCreatorSignature != nil || counterparties.contains(where: { $0.partSignature != nil }) {
             return .parted
         }
-        if propose.dissolvedAt != nil {
+        // Dissolved only when at least one VERIFIED dissolve signature is present. The previous
+        // `dissolvedAt != nil` test trusted a peer-supplied string with no signature behind it,
+        // letting any peer force a propose to .dissolved. dissolvedAt is now display-only.
+        if propose.creatorDissolveSignature != nil
+            || counterparties.contains(where: { $0.dissolveSignature != nil }) {
             return .dissolved
         }
         if !counterparties.isEmpty, counterparties.allSatisfy({ $0.signSignature != nil }) {
             return .signed
         }
         return .proposed
+    }
+
+    /// Derives dissolvedAt from VERIFIED dissolve signatures only (creator or any counterparty),
+    /// never from the peer-supplied dissolvedAt field. Dissolve signatures are only ever stored
+    /// after `verifier.verify` succeeds, so the associated timestamps are trustworthy for display.
+    /// Returns the earliest timestamp (ISO8601 strings sort chronologically), or nil if undissolved.
+    static func deriveDissolvedAt(propose: Propose, counterparties: [ProposeCounterparty]) -> String? {
+        var stamps: [String] = []
+        if propose.creatorDissolveSignature != nil, let ts = propose.creatorDissolveTimestamp {
+            stamps.append(ts)
+        }
+        for cp in counterparties where cp.dissolveSignature != nil {
+            if let ts = cp.dissolveTimestamp { stamps.append(ts) }
+        }
+        return stamps.min()
     }
 }
 
