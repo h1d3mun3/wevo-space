@@ -39,6 +39,12 @@ struct VaporSyncPeerClient: SyncPeerFetching {
         guard response.status == .ok else {
             throw Abort(.serviceUnavailable, reason: "Peer \(peerURL) returned \(response.status)")
         }
-        return try response.content.decode([ProposeResponse].self)
+        let page = try response.content.decode([ProposeResponse].self)
+        // Reject a peer that returns more than we asked for: it violates the pagination contract
+        // and would otherwise let a hostile peer inflate a single page. Treated as a peer error.
+        guard page.count <= limit else {
+            throw Abort(.badGateway, reason: "Peer \(peerURL) returned \(page.count) proposes for a limit of \(limit)")
+        }
+        return page
     }
 }

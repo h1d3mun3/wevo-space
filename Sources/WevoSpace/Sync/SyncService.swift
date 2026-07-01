@@ -9,23 +9,35 @@ actor SyncService {
     let syncSecret: String?
     private let peerClient: any SyncPeerFetching
     private let verifier: any SignatureVerifier
-    private let pageSize = 500
+    private let pageSize: Int
+    // Per-peer, per-cycle bounds so a malicious/compromised peer that always returns full pages
+    // cannot spin pullFromPeer forever (starving other peers and exhausting CPU/DB/disk).
+    private let maxPagesPerCycle: Int
+    private let maxSecondsPerPeer: TimeInterval
 
-    init(app: Application, peers: [String], syncSecret: String?, verifier: any SignatureVerifier = P256SignatureVerifier()) {
+    init(app: Application, peers: [String], syncSecret: String?, verifier: any SignatureVerifier = P256SignatureVerifier(),
+         pageSize: Int = 500, maxPagesPerCycle: Int = 200, maxSecondsPerPeer: TimeInterval = 30) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = VaporSyncPeerClient(app: app, syncSecret: syncSecret)
         self.verifier = verifier
+        self.pageSize = pageSize
+        self.maxPagesPerCycle = maxPagesPerCycle
+        self.maxSecondsPerPeer = maxSecondsPerPeer
     }
 
     /// Initializer for testing: accepts injected SyncPeerFetching and SignatureVerifier implementations.
-    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching, verifier: any SignatureVerifier = P256SignatureVerifier()) {
+    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching, verifier: any SignatureVerifier = P256SignatureVerifier(),
+         pageSize: Int = 500, maxPagesPerCycle: Int = 200, maxSecondsPerPeer: TimeInterval = 30) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = peerClient
         self.verifier = verifier
+        self.pageSize = pageSize
+        self.maxPagesPerCycle = maxPagesPerCycle
+        self.maxSecondsPerPeer = maxSecondsPerPeer
     }
 
     func pullFromAllPeers() async {
@@ -51,9 +63,21 @@ actor SyncService {
 
         var offset = 0
         var totalMerged = 0
+        var pages = 0
+        var drained = false
+        var maxUpdatedAt: Date?
+        let deadline = syncStartedAt.addingTimeInterval(maxSecondsPerPeer)
 
         do {
             while true {
+                if pages >= maxPagesPerCycle {
+                    app.logger.warning("[Sync] \(peerURL): reached max pages (\(maxPagesPerCycle)) this cycle — resuming next cycle")
+                    break
+                }
+                if Date() > deadline {
+                    app.logger.warning("[Sync] \(peerURL): exceeded time budget (\(Int(maxSecondsPerPeer))s) this cycle — resuming next cycle")
+                    break
+                }
                 let page = try await peerClient.fetchProposes(
                     from: peerURL,
                     after: after,
@@ -62,10 +86,12 @@ actor SyncService {
                 )
                 for propose in page {
                     try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger, verifier: self.verifier)
+                    if let u = propose.updatedAt, maxUpdatedAt == nil || u > maxUpdatedAt! { maxUpdatedAt = u }
                 }
                 totalMerged += page.count
+                pages += 1
                 // If fewer results than page size, we've reached the last page
-                if page.count < pageSize { break }
+                if page.count < pageSize { drained = true; break }
                 offset += pageSize
             }
         } catch {
@@ -74,14 +100,25 @@ actor SyncService {
             return
         }
 
-        // Persist checkpoint using start time so any Proposes created
-        // during this pull are captured in the next cycle
+        // Advance the checkpoint. On a full drain, use the pull start time (so proposes created
+        // during this pull are picked up next cycle). On an early break (hit the page/time cap),
+        // advance only to the newest record we actually processed — clamped to the start time so
+        // a peer cannot future-date `updatedAt` to make us skip ahead — so the remainder is
+        // resumed next cycle without being skipped and without re-pulling from scratch.
+        let newCheckpoint: Date
+        if drained {
+            newCheckpoint = syncStartedAt
+        } else if let m = maxUpdatedAt {
+            newCheckpoint = min(m, syncStartedAt)
+        } else {
+            newCheckpoint = checkpoint?.lastSyncAt ?? syncStartedAt
+        }
         do {
             if let existing = checkpoint {
-                existing.lastSyncAt = syncStartedAt
+                existing.lastSyncAt = newCheckpoint
                 try await existing.save(on: app.db)
             } else {
-                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: syncStartedAt).save(on: app.db)
+                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: newCheckpoint).save(on: app.db)
             }
         } catch {
             app.logger.error("[Sync] \(peerURL): failed to persist checkpoint — \(error)")

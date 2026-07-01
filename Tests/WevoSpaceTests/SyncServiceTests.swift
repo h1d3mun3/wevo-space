@@ -511,4 +511,26 @@ struct SyncServiceTests {
             #expect(phantomCP == nil)
         }
     }
+
+    // MARK: - M-2: pull loop is bounded
+
+    @Test("Pull loop stops at maxPagesPerCycle so a peer returning full pages cannot spin it forever")
+    func testPullLoopBoundedByMaxPages() async throws {
+        try await withApp { app in
+            // Peer always returns full pages (each == pageSize=2). Provide more than the cap of 3.
+            let pages = try (0..<5).map { _ in try makePage(count: 2) }
+            let mock = MockSyncPeerClient(pages: pages)
+            let service = SyncService(
+                app: app, peers: ["https://evil.example.com"], syncSecret: nil,
+                peerClient: mock, verifier: AcceptAllVerifier(),
+                pageSize: 2, maxPagesPerCycle: 3, maxSecondsPerPeer: 30
+            )
+            await service.pullFromAllPeers()
+
+            let calls = await mock.callCount
+            #expect(calls == 3)  // stopped at the page cap; did not exhaust all 5 pages
+            let dbCount = try await Propose.query(on: app.db).count()
+            #expect(dbCount == 6)  // only the 3 processed pages * 2 records
+        }
+    }
 }
