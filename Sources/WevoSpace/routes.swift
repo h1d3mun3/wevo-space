@@ -36,6 +36,14 @@ func routes(_ app: Application) throws {
     let v1 = app.grouped("v1")
     try v1.register(collection: ProposeController())
 
-    let syncSecret = Environment.get("SYNC_SECRET")
-    try v1.register(collection: SyncController(syncSecret: syncSecret))
+    // Sync API: only mounted when a non-empty SYNC_SECRET is configured.
+    // Without a secret the sync endpoints would expose a full-ledger read (GET
+    // /v1/sync/proposes) and a batch-upsert write (POST /v1/sync/proposes/batch) with no
+    // authentication, so we fail closed by not registering them at all in single-node mode.
+    let syncSecret = Environment.get("SYNC_SECRET")?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let syncSecret, !syncSecret.isEmpty {
+        try v1.register(collection: SyncController(syncSecret: syncSecret))
+    } else {
+        app.logger.notice("SYNC_SECRET is not set — /v1/sync endpoints are disabled (single-node mode).")
+    }
 }

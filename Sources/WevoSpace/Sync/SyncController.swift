@@ -2,7 +2,10 @@ import Fluent
 import Vapor
 
 struct SyncController: RouteCollection {
-    let syncSecret: String?
+    /// Non-optional by construction: the controller is only registered when a usable
+    /// secret is configured (see routes.swift). This makes it impossible to mount the
+    /// sync endpoints in an unauthenticated ("fail-open") state.
+    let syncSecret: String
 
     func boot(routes: any RoutesBuilder) throws {
         let sync = routes.grouped("sync")
@@ -56,9 +59,24 @@ struct SyncController: RouteCollection {
     }
 
     private func checkAuth(_ req: Request) throws {
-        guard let secret = syncSecret else { return }
-        guard req.headers.bearerAuthorization?.token == secret else {
+        // Fail closed: a request must present a bearer token that matches the configured
+        // secret. Compared in constant time to avoid leaking the secret via timing.
+        guard let token = req.headers.bearerAuthorization?.token,
+              SyncController.constantTimeEquals(token, syncSecret) else {
             throw Abort(.unauthorized, reason: "Invalid or missing sync secret")
         }
+    }
+
+    /// Constant-time string comparison (relative to the configured secret length) so that
+    /// the time taken to reject a token does not reveal how many leading bytes matched.
+    static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8)
+        let b = Array(rhs.utf8)
+        var diff = UInt8(a.count == b.count ? 0 : 1)
+        for i in 0..<b.count {
+            let x = i < a.count ? a[i] : 0
+            diff |= x ^ b[i]
+        }
+        return diff == 0
     }
 }

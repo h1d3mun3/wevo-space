@@ -37,13 +37,25 @@ public func configure(_ app: Application) async throws {
         .filter { !$0.isEmpty }
 
     if !peerNodes.isEmpty {
-        let syncSecret = Environment.get("SYNC_SECRET")
+        // Federation requires inter-node authentication. Refuse to boot when peers are
+        // configured but no usable SYNC_SECRET is set, rather than silently running an
+        // unauthenticated sync surface.
+        let syncSecret = Environment.get("SYNC_SECRET")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let syncSecret, !syncSecret.isEmpty else {
+            throw ConfigurationError(reason: "PEER_NODES is configured but SYNC_SECRET is unset or empty — refusing to start federation without inter-node authentication.")
+        }
         let syncInterval = Environment.get("SYNC_INTERVAL_SECONDS").flatMap(Double.init) ?? 60.0
         let syncService = SyncService(app: app, peers: peerNodes, syncSecret: syncSecret)
         app.syncService = syncService
         app.lifecycle.use(SyncScheduler(syncService: syncService, interval: syncInterval))
         app.logger.info("Node sync enabled: \(peerNodes.count) peer(s), interval \(Int(syncInterval))s")
     }
+}
+
+/// Thrown during application configuration when the environment is invalid or unsafe to start with.
+struct ConfigurationError: Error, CustomStringConvertible {
+    let reason: String
+    var description: String { reason }
 }
 
 // Switch database configuration based on environment
