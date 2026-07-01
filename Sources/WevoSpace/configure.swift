@@ -67,6 +67,23 @@ struct ConfigurationError: Error, CustomStringConvertible {
     var description: String { reason }
 }
 
+private func isLocalHost(_ host: String?) -> Bool {
+    guard let host else { return false }
+    return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+/// Resolves the PostgreSQL TLS policy. `DATABASE_SSL_MODE` overrides (`disable` / `require`);
+/// otherwise verified TLS is used for remote hosts and disabled for localhost. `nil` means
+/// plaintext. This makes managed-DB (Heroku/Railway/…) connections encrypted-by-default, while an
+/// internal trusted network (e.g. docker-compose) can opt out with `DATABASE_SSL_MODE=disable`.
+private func postgresTLSConfiguration(host: String?) -> TLSConfiguration? {
+    switch Environment.get("DATABASE_SSL_MODE")?.lowercased() {
+    case "disable": return nil
+    case "require": return .makeClientConfiguration()
+    default: return isLocalHost(host) ? nil : .makeClientConfiguration()
+    }
+}
+
 // Switch database configuration based on environment
 private func configureDatabase(_ app: Application) throws {
     // Use PostgreSQL if DATABASE_URL environment variable is set
@@ -84,12 +101,27 @@ private func configureDatabase(_ app: Application) throws {
 
 // Parse PostgreSQL connection settings from DATABASE_URL environment variable
 private func configureDatabaseURL(_ app: Application, url: String) throws {
-    guard let postgresConfig = try? PostgresConfiguration(url: url) else {
+    guard var postgresConfig = PostgresConfiguration(url: url) else {
         throw Abort(.internalServerError, reason: "Invalid DATABASE_URL format")
     }
 
+    // PostgresConfiguration(url:) only enables TLS when the URL carries sslmode=require/ssl=true.
+    // Enforce our policy so a managed-DB URL that omits sslmode is not connected in cleartext.
+    let host = URLComponents(string: url)?.host
+    switch Environment.get("DATABASE_SSL_MODE")?.lowercased() {
+    case "disable":
+        postgresConfig.tlsConfiguration = nil
+    case "require":
+        postgresConfig.tlsConfiguration = .makeClientConfiguration()
+    default:
+        if postgresConfig.tlsConfiguration == nil, !isLocalHost(host) {
+            postgresConfig.tlsConfiguration = .makeClientConfiguration()
+            app.logger.notice("DATABASE_URL host is remote and has no sslmode — enabling verified TLS (set DATABASE_SSL_MODE=disable to opt out).")
+        }
+    }
+
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
-    app.logger.info("Using PostgreSQL database from DATABASE_URL")
+    app.logger.info("Using PostgreSQL database from DATABASE_URL (TLS: \(postgresConfig.tlsConfiguration == nil ? "off" : "on"))")
 }
 
 // Build PostgreSQL settings from individual environment variables
@@ -101,15 +133,17 @@ private func configurePostgreSQL(_ app: Application) throws {
         throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required in production")
     }
     let database = Environment.get("DATABASE_NAME") ?? "wevospace"
+    let tls = postgresTLSConfiguration(host: hostname)
 
     let postgresConfig = PostgresConfiguration(
         hostname: hostname,
         port: port,
         username: username,
         password: password,
-        database: database
+        database: database,
+        tlsConfiguration: tls
     )
 
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
-    app.logger.info("Using PostgreSQL database: \(hostname):\(port)/\(database)")
+    app.logger.info("Using PostgreSQL database: \(hostname):\(port)/\(database) (TLS: \(tls == nil ? "off" : "on"))")
 }
