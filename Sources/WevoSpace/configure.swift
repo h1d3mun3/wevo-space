@@ -14,8 +14,17 @@ public func configure(_ app: Application) async throws {
     app.middleware.use(RequestSizeLimitMiddleware(maxBytes: 1_000_000))
     app.routes.defaultMaxBodySize = "1mb"
 
-    // Rate limiting: up to 60 requests per minute
-    app.middleware.use(RateLimitMiddleware(requestLimit: 60, timeWindow: 60))
+    // Rate limiting: up to 60 requests per minute.
+    // TRUSTED_PROXIES (comma-separated IPs) controls whose X-Forwarded-For / X-Real-IP headers are
+    // honored; without it the limiter keys on the real transport peer, so the limit cannot be
+    // bypassed by spoofing headers. A scheduler periodically evicts stale entries to bound memory.
+    let trustedProxies = Set((Environment.get("TRUSTED_PROXIES") ?? "")
+        .split(separator: ",")
+        .map { String($0).trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty })
+    let rateLimiter = RateLimitMiddleware(requestLimit: 60, timeWindow: 60, trustedProxies: trustedProxies)
+    app.middleware.use(rateLimiter)
+    app.lifecycle.use(RateLimitCleanupScheduler(middleware: rateLimiter, interval: 60))
 
     // Database configuration
     try configureDatabase(app)

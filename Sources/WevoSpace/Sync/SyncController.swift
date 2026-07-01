@@ -51,6 +51,11 @@ struct SyncController: RouteCollection {
         try checkAuth(req)
 
         let incoming = try req.content.decode([ProposeResponse].self)
+        // Cap the batch so a single request cannot force an unbounded number of ECDSA
+        // verifications and DB writes (matches the sync pull page size).
+        guard incoming.count <= 500 else {
+            throw Abort(.badRequest, reason: "Batch too large (max 500 proposes)")
+        }
         let verifier = req.application.syncVerifier
         for propose in incoming {
             try await SyncService.upsertPropose(propose, on: req.db, logger: req.logger, verifier: verifier)

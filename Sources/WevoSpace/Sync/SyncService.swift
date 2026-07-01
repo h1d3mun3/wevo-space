@@ -273,6 +273,13 @@ actor SyncService {
         let hash = incoming.contentHash
         let creatorKey = incoming.creatorPublicKey
 
+        // Reject oversized records so a peer cannot push a propose with tens of thousands of
+        // counterparties (storage/CPU amplification), matching the public create-path limit.
+        guard incoming.counterparties.count <= ProposeController.maxCounterparties else {
+            logger.warning("[Sync] propose \(idStr): too many counterparties (\(incoming.counterparties.count)) — skipped")
+            return
+        }
+
         // Verify creation signature before persisting anything
         let sortedKeys = incoming.counterparties.map { $0.publicKey }.sorted().joined()
         let createMsg = "proposed.\(idStr)\(hash)\(creatorKey)\(sortedKeys)\(incoming.createdAt)"

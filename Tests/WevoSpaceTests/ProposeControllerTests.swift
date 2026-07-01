@@ -306,6 +306,63 @@ struct ProposeControllerTests {
         }
     }
 
+    @Test("Creating a Propose with too many counterparties returns bad request")
+    func createProposeWithTooManyCounterpartiesReturns400() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let keys = (0..<65).map { _ in KeyPair().publicKeyBase64 }
+            let message = "proposed." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + keys.sorted().joined() + createdAt
+            let sig = try creator.sign(message)
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: sig,
+                counterpartyPublicKeys: keys,
+                createdAt: createdAt
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
+    @Test("Creating a Propose with duplicate counterparties returns bad request")
+    func createProposeWithDuplicateCounterpartiesReturns400() async throws {
+        try await withApp { app in
+            let proposeId = UUID()
+            let contentHash = "test-hash"
+            let createdAt = "2026-01-01T00:00:00Z"
+            let creator = KeyPair()
+            let cp = KeyPair()
+            let keys = [cp.publicKeyBase64, cp.publicKeyBase64]
+            let message = "proposed." + proposeId.uuidString + contentHash + creator.publicKeyBase64 + keys.sorted().joined() + createdAt
+            let sig = try creator.sign(message)
+
+            let input = CreateProposeInput(
+                proposeId: proposeId.uuidString,
+                contentHash: contentHash,
+                creatorPublicKey: creator.publicKeyBase64,
+                creatorSignature: sig,
+                counterpartyPublicKeys: keys,
+                createdAt: createdAt
+            )
+
+            try await app.testing().test(.POST, "v1/proposes", beforeRequest: { req in
+                try req.content.encode(input)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .badRequest)
+            })
+        }
+    }
+
     // MARK: - GET /v1/proposes/:id
 
     @Test("Can retrieve an existing Propose by ID")
