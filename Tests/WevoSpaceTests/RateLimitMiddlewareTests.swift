@@ -197,4 +197,27 @@ struct RateLimitMiddlewareTests {
             })
         }
     }
+
+    @Test("Spoofed X-Forwarded-For does not create separate rate-limit buckets")
+    func spoofedXForwardedForDoesNotBypassLimit() async throws {
+        try await withApp { app in
+            // Each request carries a DIFFERENT X-Forwarded-For. With no trusted proxy configured,
+            // the header is ignored and all requests share the transport-peer bucket, so the limit
+            // still applies and the 6th request is rejected. (Previously, rotating XFF minted a
+            // fresh bucket per request and bypassed the limit entirely.)
+            for i in 1...5 {
+                try await app.testing().test(.GET, "hello", beforeRequest: { req in
+                    req.headers.replaceOrAdd(name: "X-Forwarded-For", value: "10.0.0.\(i)")
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok, "Request \(i) should succeed")
+                })
+            }
+
+            try await app.testing().test(.GET, "hello", beforeRequest: { req in
+                req.headers.replaceOrAdd(name: "X-Forwarded-For", value: "10.0.0.99")
+            }, afterResponse: { res async throws in
+                #expect(res.status == .tooManyRequests, "Rotating X-Forwarded-For must not bypass the limit")
+            })
+        }
+    }
 }
