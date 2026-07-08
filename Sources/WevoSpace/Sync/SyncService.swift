@@ -284,6 +284,14 @@ actor SyncService {
         let hash = incoming.contentHash
         let creatorKey = incoming.creatorPublicKey
 
+        // Only accept signature schemes this build actually understands. Otherwise the
+        // peer-supplied signatureVersion would be stored unvalidated and the record verified
+        // against the wrong message format.
+        guard incoming.signatureVersion == 1 else {
+            logger.warning("[Sync] propose \(idStr): unsupported signatureVersion \(incoming.signatureVersion) — skipped")
+            return
+        }
+
         // Verify creation signature before persisting anything
         let sortedKeys = incoming.counterparties.map { $0.publicKey }.sorted().joined()
         let createMsg = "proposed.\(idStr)\(hash)\(creatorKey)\(sortedKeys)\(incoming.createdAt)"
