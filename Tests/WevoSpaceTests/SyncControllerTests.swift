@@ -8,6 +8,10 @@ import Foundation
 @Suite("SyncController Tests", .serialized)
 struct SyncControllerTests {
 
+    /// Bearer secret the test app is configured with. The sync endpoints are now fail-closed:
+    /// they are only mounted when a non-empty SYNC_SECRET is set, and every request must carry it.
+    private static let syncSecret = "test-sync-secret"
+
     // MARK: - App Setup
 
     /// Accepts every signature — lets batch tests use synthetic payloads without real crypto.
@@ -67,7 +71,7 @@ struct SyncControllerTests {
         }
     }
 
-    /// Creates a propose via the API and returns its ProposeResponse.
+    /// Creates a propose via the public API and returns its ProposeResponse.
     private func createPropose(
         app: Application,
         proposeId: UUID = UUID(),
@@ -190,15 +194,32 @@ struct SyncControllerTests {
         }
     }
 
+    // MARK: - Sync routes are fail-closed
+
+    @Test("Sync routes are not mounted when SYNC_SECRET is unset")
+    func syncRoutesDisabledWithoutSecret() async throws {
+        try await withApp { app in
+            // No SYNC_SECRET configured → SyncController is not registered at all.
+            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async in
+                #expect(res.status == .notFound)
+            })
+            try await app.testing().test(.POST, "v1/sync/proposes/batch", afterResponse: { res async in
+                #expect(res.status == .notFound)
+            })
+        }
+    }
+
     // MARK: - GET /v1/sync/proposes
 
     @Test("Returns all proposes when no after parameter")
     func syncListReturnsAllProposes() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             _ = try await createPropose(app: app)
             _ = try await createPropose(app: app)
 
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 2)
@@ -208,8 +229,10 @@ struct SyncControllerTests {
 
     @Test("Returns empty array when no proposes exist")
     func syncListReturnsEmptyArray() async throws {
-        try await withApp { app in
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+        try await withApp(syncSecret: Self.syncSecret) { app in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.isEmpty)
@@ -219,7 +242,7 @@ struct SyncControllerTests {
 
     @Test("Filters proposes by after parameter")
     func syncListFiltersAfterTimestamp() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             _ = try await createPropose(app: app)
             try await Task.sleep(nanoseconds: 1_100_000_000)
             let cutoff = ISO8601DateFormatter().string(from: Date())
@@ -227,7 +250,9 @@ struct SyncControllerTests {
             _ = try await createPropose(app: app)
 
             let encoded = cutoff.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cutoff
-            try await app.testing().test(.GET, "v1/sync/proposes?after=\(encoded)", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?after=\(encoded)", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 1)
@@ -237,12 +262,15 @@ struct SyncControllerTests {
 
     @Test("Respects limit parameter")
     func syncListRespectsLimit() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([makePropose(), makePropose(), makePropose()])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=2", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 2)
@@ -252,14 +280,17 @@ struct SyncControllerTests {
 
     @Test("Respects offset parameter")
     func syncListRespectsOffset() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let first = makePropose()
             let second = makePropose()
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([first, second])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=10&offset=1", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=10&offset=1", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 1)
@@ -269,28 +300,35 @@ struct SyncControllerTests {
 
     @Test("Paginates correctly across multiple pages")
     func syncListPaginatesCorrectly() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let proposes = (0..<5).map { _ in makePropose() }
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode(proposes)
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
             // Page 1: limit=2, offset=0
             var page1: [ProposeResponse] = []
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=0", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=0", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 page1 = try res.content.decode([ProposeResponse].self)
                 #expect(page1.count == 2)
             })
 
             // Page 2: limit=2, offset=2
             var page2: [ProposeResponse] = []
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=2", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=2", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 page2 = try res.content.decode([ProposeResponse].self)
                 #expect(page2.count == 2)
             })
 
             // Page 3: limit=2, offset=4 — last page, 1 record
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=4", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=2&offset=4", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 let page3 = try res.content.decode([ProposeResponse].self)
                 #expect(page3.count == 1)
             })
@@ -303,8 +341,10 @@ struct SyncControllerTests {
 
     @Test("Clamps limit to 1000 maximum")
     func syncListClampsLimitToMax() async throws {
-        try await withApp { app in
-            try await app.testing().test(.GET, "v1/sync/proposes?limit=9999", afterResponse: { res async throws in
+        try await withApp(syncSecret: Self.syncSecret) { app in
+            try await app.testing().test(.GET, "v1/sync/proposes?limit=9999", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
             })
         }
@@ -312,8 +352,10 @@ struct SyncControllerTests {
 
     @Test("Returns 400 for invalid after parameter")
     func syncListInvalidAfterReturns400() async throws {
-        try await withApp { app in
-            try await app.testing().test(.GET, "v1/sync/proposes?after=not-a-date", afterResponse: { res async in
+        try await withApp(syncSecret: Self.syncSecret) { app in
+            try await app.testing().test(.GET, "v1/sync/proposes?after=not-a-date", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async in
                 #expect(res.status == .badRequest)
             })
         }
@@ -354,16 +396,19 @@ struct SyncControllerTests {
 
     @Test("Batch insert creates new proposes")
     func batchInsertCreatesNewProposes() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let propose = makePropose()
 
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([propose])
             }, afterResponse: { res async in
                 #expect(res.status == .ok)
             })
 
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 1)
                 #expect(body.first?.id == propose.id)
@@ -373,18 +418,21 @@ struct SyncControllerTests {
 
     @Test("Batch insert is idempotent")
     func batchInsertIdempotent() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let propose = makePropose()
 
             for _ in 0..<2 {
                 try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                    req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                     try req.content.encode([propose])
                 }, afterResponse: { res async in
                     #expect(res.status == .ok)
                 })
             }
 
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.count == 1)
             })
@@ -393,21 +441,25 @@ struct SyncControllerTests {
 
     @Test("Batch merge does not overwrite existing non-nil signature fields")
     func batchMergeDoesNotOverwriteExistingSignatures() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let id = UUID()
             // Insert with signSignature set
             let withSig = makePropose(id: id, signSignature: "original-sig", signTimestamp: "2026-01-01T00:00:00Z")
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([withSig])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
             // Attempt to overwrite with a different signature
             let withDifferentSig = makePropose(id: id, signSignature: "DIFFERENT-SIG", signTimestamp: "2026-06-01T00:00:00Z")
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([withDifferentSig])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.first?.counterparties.first?.signSignature == "original-sig")
             })
@@ -416,21 +468,25 @@ struct SyncControllerTests {
 
     @Test("Batch merge propagates new signature fields to existing propose")
     func batchMergeAddsNewSignatureFields() async throws {
-        try await withApp { app in
+        try await withApp(syncSecret: Self.syncSecret) { app in
             let id = UUID()
             // Insert base with no honor signature
             let base = makePropose(id: id)
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([base])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
             // Merge with honorCreatorSignature filled in
             let withHonor = makePropose(id: id, honorCreatorSignature: "honor-sig", honorCreatorTimestamp: "2026-03-01T00:00:00Z")
             try await app.testing().test(.POST, "v1/sync/proposes/batch", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
                 try req.content.encode([withHonor])
             }, afterResponse: { res async in #expect(res.status == .ok) })
 
-            try await app.testing().test(.GET, "v1/sync/proposes", afterResponse: { res async throws in
+            try await app.testing().test(.GET, "v1/sync/proposes", beforeRequest: { req in
+                req.headers.bearerAuthorization = BearerAuthorization(token: Self.syncSecret)
+            }, afterResponse: { res async throws in
                 let body = try res.content.decode([ProposeResponse].self)
                 #expect(body.first?.honorCreatorSignature == "honor-sig")
             })

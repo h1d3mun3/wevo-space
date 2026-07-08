@@ -14,8 +14,17 @@ public func configure(_ app: Application) async throws {
     app.middleware.use(RequestSizeLimitMiddleware(maxBytes: 1_000_000))
     app.routes.defaultMaxBodySize = "1mb"
 
-    // Rate limiting: up to 60 requests per minute
-    app.middleware.use(RateLimitMiddleware(requestLimit: 60, timeWindow: 60))
+    // Rate limiting: up to 60 requests per minute.
+    // TRUSTED_PROXIES (comma-separated IPs) controls whose X-Forwarded-For / X-Real-IP headers are
+    // honored; without it the limiter keys on the real transport peer, so the limit cannot be
+    // bypassed by spoofing headers. A scheduler periodically evicts stale entries to bound memory.
+    let trustedProxies = Set((Environment.get("TRUSTED_PROXIES") ?? "")
+        .split(separator: ",")
+        .map { String($0).trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty })
+    let rateLimiter = RateLimitMiddleware(requestLimit: 60, timeWindow: 60, trustedProxies: trustedProxies)
+    app.middleware.use(rateLimiter)
+    app.lifecycle.use(RateLimitCleanupScheduler(middleware: rateLimiter, interval: 60))
 
     // Database configuration
     try configureDatabase(app)
@@ -37,12 +46,41 @@ public func configure(_ app: Application) async throws {
         .filter { !$0.isEmpty }
 
     if !peerNodes.isEmpty {
-        let syncSecret = Environment.get("SYNC_SECRET")
+        // Federation requires inter-node authentication. Refuse to boot when peers are
+        // configured but no usable SYNC_SECRET is set, rather than silently running an
+        // unauthenticated sync surface.
+        let syncSecret = Environment.get("SYNC_SECRET")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let syncSecret, !syncSecret.isEmpty else {
+            throw ConfigurationError(reason: "PEER_NODES is configured but SYNC_SECRET is unset or empty — refusing to start federation without inter-node authentication.")
+        }
         let syncInterval = Environment.get("SYNC_INTERVAL_SECONDS").flatMap(Double.init) ?? 60.0
         let syncService = SyncService(app: app, peers: peerNodes, syncSecret: syncSecret)
         app.syncService = syncService
         app.lifecycle.use(SyncScheduler(syncService: syncService, interval: syncInterval))
         app.logger.info("Node sync enabled: \(peerNodes.count) peer(s), interval \(Int(syncInterval))s")
+    }
+}
+
+/// Thrown during application configuration when the environment is invalid or unsafe to start with.
+struct ConfigurationError: Error, CustomStringConvertible {
+    let reason: String
+    var description: String { reason }
+}
+
+private func isLocalHost(_ host: String?) -> Bool {
+    guard let host else { return false }
+    return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+/// Resolves the PostgreSQL TLS policy. `DATABASE_SSL_MODE` overrides (`disable` / `require`);
+/// otherwise verified TLS is used for remote hosts and disabled for localhost. `nil` means
+/// plaintext. This makes managed-DB (Heroku/Railway/…) connections encrypted-by-default, while an
+/// internal trusted network (e.g. docker-compose) can opt out with `DATABASE_SSL_MODE=disable`.
+private func postgresTLSConfiguration(host: String?) -> TLSConfiguration? {
+    switch Environment.get("DATABASE_SSL_MODE")?.lowercased() {
+    case "disable": return nil
+    case "require": return .makeClientConfiguration()
+    default: return isLocalHost(host) ? nil : .makeClientConfiguration()
     }
 }
 
@@ -68,20 +106,29 @@ private func configureDatabase(_ app: Application) throws {
     }
 }
 
-/// Thrown during application configuration when the environment is invalid or unsafe to start with.
-struct ConfigurationError: Error, CustomStringConvertible {
-    let reason: String
-    var description: String { reason }
-}
-
 // Parse PostgreSQL connection settings from DATABASE_URL environment variable
 private func configureDatabaseURL(_ app: Application, url: String) throws {
-    guard let postgresConfig = try? PostgresConfiguration(url: url) else {
+    guard var postgresConfig = PostgresConfiguration(url: url) else {
         throw Abort(.internalServerError, reason: "Invalid DATABASE_URL format")
     }
 
+    // PostgresConfiguration(url:) only enables TLS when the URL carries sslmode=require/ssl=true.
+    // Enforce our policy so a managed-DB URL that omits sslmode is not connected in cleartext.
+    let host = URLComponents(string: url)?.host
+    switch Environment.get("DATABASE_SSL_MODE")?.lowercased() {
+    case "disable":
+        postgresConfig.tlsConfiguration = nil
+    case "require":
+        postgresConfig.tlsConfiguration = .makeClientConfiguration()
+    default:
+        if postgresConfig.tlsConfiguration == nil, !isLocalHost(host) {
+            postgresConfig.tlsConfiguration = .makeClientConfiguration()
+            app.logger.notice("DATABASE_URL host is remote and has no sslmode — enabling verified TLS (set DATABASE_SSL_MODE=disable to opt out).")
+        }
+    }
+
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
-    app.logger.info("Using PostgreSQL database from DATABASE_URL")
+    app.logger.info("Using PostgreSQL database from DATABASE_URL (TLS: \(postgresConfig.tlsConfiguration == nil ? "off" : "on"))")
 }
 
 // Build PostgreSQL settings from individual environment variables
@@ -93,15 +140,17 @@ private func configurePostgreSQL(_ app: Application) throws {
         throw Abort(.internalServerError, reason: "DATABASE_PASSWORD environment variable is required in production")
     }
     let database = Environment.get("DATABASE_NAME") ?? "wevospace"
+    let tls = postgresTLSConfiguration(host: hostname)
 
     let postgresConfig = PostgresConfiguration(
         hostname: hostname,
         port: port,
         username: username,
         password: password,
-        database: database
+        database: database,
+        tlsConfiguration: tls
     )
 
     app.databases.use(.postgres(configuration: postgresConfig), as: .psql)
-    app.logger.info("Using PostgreSQL database: \(hostname):\(port)/\(database)")
+    app.logger.info("Using PostgreSQL database: \(hostname):\(port)/\(database) (TLS: \(tls == nil ? "off" : "on"))")
 }

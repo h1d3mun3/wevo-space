@@ -385,6 +385,157 @@ struct SyncServiceTests {
         }
     }
 
+    // MARK: - #2 dissolvedAt integrity
+
+    @Test("Peer-supplied dissolvedAt with no dissolve signature does NOT dissolve the propose")
+    func testUnsignedDissolvedAtIsIgnored() async throws {
+        try await withApp { app in
+            let id = UUID()
+            let base = try makeProposeResponse(id: id)
+            try await SyncService.upsertPropose(base, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            // Peer re-submits the propose with dissolvedAt set but NO dissolve signature behind it.
+            let poisoned = try makeProposeResponse(
+                id: id,
+                extraJSON: #""dissolvedAt": "2026-06-01T00:00:00Z""#
+            )
+            try await SyncService.upsertPropose(poisoned, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            let stored = try await Propose.query(on: app.db).filter(\.$id == id).first()
+            #expect(stored?.status != ProposeStatus.dissolved.rawValue)
+            #expect(stored?.dissolvedAt == nil)
+        }
+    }
+
+    @Test("Verified dissolve signature dissolves the propose and derives dissolvedAt from the signed timestamp")
+    func testVerifiedDissolveSignatureDrivesStatus() async throws {
+        try await withApp { app in
+            let id = UUID()
+            let base = try makeProposeResponse(id: id)
+            try await SyncService.upsertPropose(base, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            // Verified creator dissolve signature, plus a bogus peer-supplied dissolvedAt that must be ignored.
+            let dissolved = try makeProposeResponse(
+                id: id,
+                extraJSON: #""creatorDissolveSignature": "sig", "creatorDissolveTimestamp": "2026-06-01T00:00:00Z", "dissolvedAt": "1999-01-01T00:00:00Z""#
+            )
+            try await SyncService.upsertPropose(dissolved, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            let stored = try await Propose.query(on: app.db).filter(\.$id == id).first()
+            #expect(stored?.status == ProposeStatus.dissolved.rawValue)
+            // Derived from the verified dissolve timestamp, NOT the peer-supplied "1999" value.
+            #expect(stored?.dissolvedAt == "2026-06-01T00:00:00Z")
+        }
+    }
+
+    // MARK: - #3 counterparty-set integrity
+
+    @Test("Merge rejects a self-signed counterparty not in the creator-signed set (no forged parted)")
+    func testUnknownCounterpartyRejectedOnMerge() async throws {
+        try await withApp { app in
+            let id = UUID()
+            let base = try makeProposeResponse(id: id)  // counterparties: [cp-jwk]
+            try await SyncService.upsertPropose(base, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            // Peer injects an EXTRA attacker-owned counterparty carrying a valid self part signature.
+            let json = """
+            {
+                "id": "\(id.uuidString)",
+                "contentHash": "test-hash",
+                "creatorPublicKey": "creator-jwk",
+                "creatorSignature": "creator-sig",
+                "counterparties": [
+                    {"publicKey": "cp-jwk"},
+                    {"publicKey": "attacker-jwk", "partSignature": "sig", "partTimestamp": "2026-06-01T00:00:00Z"}
+                ],
+                "status": "proposed",
+                "signatureVersion": 1,
+                "createdAt": "2026-01-01T00:00:00Z"
+            }
+            """.data(using: .utf8)!
+            let withPhantom = try JSONDecoder().decode(ProposeResponse.self, from: json)
+            try await SyncService.upsertPropose(withPhantom, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            // The unauthorized counterparty must not be persisted and must not force .parted.
+            let attacker = try await ProposeCounterparty.query(on: app.db).filter(\.$publicKey == "attacker-jwk").first()
+            #expect(attacker == nil)
+            #expect(try await ProposeCounterparty.query(on: app.db).count() == 1)
+            let stored = try await Propose.query(on: app.db).filter(\.$id == id).first()
+            #expect(stored?.status != ProposeStatus.parted.rawValue)
+        }
+    }
+
+    @Test("Merge cannot downgrade an honored propose by injecting an unsigned phantom counterparty")
+    func testPhantomCounterpartyCannotDowngradeHonored() async throws {
+        try await withApp { app in
+            let id = UUID()
+            // Seed a fully honored propose (creator honor + the single counterparty honor).
+            let honoredJSON = """
+            {
+                "id": "\(id.uuidString)",
+                "contentHash": "test-hash",
+                "creatorPublicKey": "creator-jwk",
+                "creatorSignature": "creator-sig",
+                "counterparties": [{"publicKey": "cp-jwk", "signSignature": "s", "signTimestamp": "2026-01-01T00:00:00Z", "honorSignature": "h", "honorTimestamp": "2026-01-02T00:00:00Z"}],
+                "honorCreatorSignature": "hc",
+                "honorCreatorTimestamp": "2026-01-02T00:00:00Z",
+                "status": "honored",
+                "signatureVersion": 1,
+                "createdAt": "2026-01-01T00:00:00Z"
+            }
+            """.data(using: .utf8)!
+            let honored = try JSONDecoder().decode(ProposeResponse.self, from: honoredJSON)
+            try await SyncService.upsertPropose(honored, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+            let seeded = try await Propose.query(on: app.db).filter(\.$id == id).first()
+            #expect(seeded?.status == ProposeStatus.honored.rawValue)
+
+            // Peer injects an unsigned phantom counterparty.
+            let phantomJSON = """
+            {
+                "id": "\(id.uuidString)",
+                "contentHash": "test-hash",
+                "creatorPublicKey": "creator-jwk",
+                "creatorSignature": "creator-sig",
+                "counterparties": [{"publicKey": "cp-jwk"}, {"publicKey": "phantom-jwk"}],
+                "status": "proposed",
+                "signatureVersion": 1,
+                "createdAt": "2026-01-01T00:00:00Z"
+            }
+            """.data(using: .utf8)!
+            let phantom = try JSONDecoder().decode(ProposeResponse.self, from: phantomJSON)
+            try await SyncService.upsertPropose(phantom, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            let stored = try await Propose.query(on: app.db).filter(\.$id == id).first()
+            #expect(stored?.status == ProposeStatus.honored.rawValue)  // still honored
+            let phantomCP = try await ProposeCounterparty.query(on: app.db).filter(\.$publicKey == "phantom-jwk").first()
+            #expect(phantomCP == nil)
+        }
+    }
+
+    // MARK: - M-2: pull loop is bounded
+
+    @Test("Pull loop stops at maxPagesPerCycle so a peer returning full pages cannot spin it forever")
+    func testPullLoopBoundedByMaxPages() async throws {
+        try await withApp { app in
+            // Peer always returns full pages (each == pageSize=2). Provide more than the cap of 3.
+            let pages = try (0..<5).map { _ in try makePage(count: 2) }
+            let mock = MockSyncPeerClient(pages: pages)
+            let service = SyncService(
+                app: app, peers: ["https://evil.example.com"], syncSecret: nil,
+                peerClient: mock, verifier: AcceptAllVerifier(),
+                pageSize: 2, maxPagesPerCycle: 3, maxSecondsPerPeer: 30
+            )
+            await service.pullFromAllPeers()
+
+            let calls = await mock.callCount
+            #expect(calls == 3)  // stopped at the page cap; did not exhaust all 5 pages
+            let dbCount = try await Propose.query(on: app.db).count()
+            #expect(dbCount == 6)  // only the 3 processed pages * 2 records
+        }
+    }
+
+    // MARK: - signatureVersion integrity
+
     @Test("Rejects a propose with an unsupported signatureVersion")
     func testRejectsUnsupportedSignatureVersion() async throws {
         try await withApp { app in
