@@ -533,4 +533,32 @@ struct SyncServiceTests {
             #expect(dbCount == 6)  // only the 3 processed pages * 2 records
         }
     }
+
+    // MARK: - signatureVersion integrity
+
+    @Test("Rejects a propose with an unsupported signatureVersion")
+    func testRejectsUnsupportedSignatureVersion() async throws {
+        try await withApp { app in
+            let id = UUID()
+            let json = """
+            {
+                "id": "\(id.uuidString)",
+                "contentHash": "test-hash",
+                "creatorPublicKey": "creator-jwk",
+                "creatorSignature": "creator-sig",
+                "counterparties": [{"publicKey": "cp-jwk"}],
+                "status": "proposed",
+                "signatureVersion": 2,
+                "createdAt": "2026-01-01T00:00:00Z"
+            }
+            """.data(using: .utf8)!
+            let propose = try JSONDecoder().decode(ProposeResponse.self, from: json)
+
+            // Even with an accept-all verifier, an unknown signatureVersion must not be persisted.
+            try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger, verifier: AcceptAllVerifier())
+
+            let count = try await Propose.query(on: app.db).count()
+            #expect(count == 0)
+        }
+    }
 }
