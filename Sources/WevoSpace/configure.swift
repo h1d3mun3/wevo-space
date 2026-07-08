@@ -93,6 +93,13 @@ private func configureDatabase(_ app: Application) throws {
         // In production, read PostgreSQL settings from individual environment variables
         try configurePostgreSQL(app)
     } else {
+        // Fail closed on a likely production misconfiguration: ENVIRONMENT=production but the app
+        // was not launched with `--env production` (so neither the DATABASE_URL nor the Postgres
+        // path was taken). Silently falling back to the on-disk SQLite dev database in production
+        // would be a data-durability/security risk, so refuse to start instead.
+        if Environment.get("ENVIRONMENT")?.lowercased() == "production" {
+            throw ConfigurationError(reason: "ENVIRONMENT=production but the app was not started with `--env production`; refusing to fall back to the SQLite development database. Set DATABASE_URL, or start with `--env production` and the DATABASE_* variables.")
+        }
         // Use SQLite in development/test environments
         app.databases.use(.sqlite(.file("db.sqlite")), as: .sqlite)
         app.logger.info("Using SQLite database (development mode)")
