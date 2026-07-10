@@ -2,6 +2,12 @@ name: Docker Build and Push
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Docker image tag (e.g. 1.2.3 or latest)"
+        required: true
+        default: "latest"
+        type: string
 
 jobs:
   BuildAndPush:
@@ -28,6 +34,6 @@ jobs:
           context: .
           platforms: linux/arm64,linux/amd64
           push: true
-          tags: h1d3mun3/wevo-space:latest
+          tags: h1d3mun3/wevo-space:${{ github.event.inputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
