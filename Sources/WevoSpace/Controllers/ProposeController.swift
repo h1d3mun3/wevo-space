@@ -87,6 +87,18 @@ struct ProposeController: RouteCollection {
             throw Abort(.badRequest, reason: "counterpartyPublicKeys must contain at least one entry")
         }
 
+        // Bound the counterparty set: a single self-signed request could otherwise carry tens of
+        // thousands of entries and trigger that many row inserts (storage/CPU amplification DoS).
+        guard input.counterpartyPublicKeys.count <= ProposeController.maxCounterparties else {
+            throw Abort(.badRequest, reason: "Too many counterparties (max \(ProposeController.maxCounterparties))")
+        }
+        guard Set(input.counterpartyPublicKeys).count == input.counterpartyPublicKeys.count else {
+            throw Abort(.badRequest, reason: "counterpartyPublicKeys must not contain duplicates")
+        }
+        for key in input.counterpartyPublicKeys where !ProposeController.isValidJWK(key) {
+            throw Abort(.badRequest, reason: "Invalid counterparty public key (expected P-256 JWK)")
+        }
+
         // Duplicate check
         if try await Propose.find(proposeId, on: req.db) != nil {
             throw Abort(.conflict, reason: "A Propose with the same ID already exists")
@@ -107,10 +119,11 @@ struct ProposeController: RouteCollection {
         )
         try await propose.save(on: req.db)
 
-        for publicKey in input.counterpartyPublicKeys {
-            let counterparty = ProposeCounterparty(proposeID: proposeId, publicKey: publicKey)
-            try await counterparty.save(on: req.db)
+        // Batch insert in a single round-trip instead of N awaited saves.
+        let counterparties = input.counterpartyPublicKeys.map {
+            ProposeCounterparty(proposeID: proposeId, publicKey: $0)
         }
+        try await counterparties.create(on: req.db)
 
         return .created
     }
@@ -354,6 +367,23 @@ struct ProposeController: RouteCollection {
 
         propose.proposeStatus = SyncService.computeStatus(propose: propose, counterparties: propose.counterparties)
         try await propose.save(on: db)
+    }
+
+    // MARK: - Limits
+
+    /// Upper bound on counterparties per propose, applied on both the public create path and the
+    /// sync ingest path, to prevent storage/CPU amplification from a single request.
+    static let maxCounterparties = 64
+
+    /// True if `key` is a well-formed P-256 JWK (decodable with base64url x/y components).
+    static func isValidJWK(_ key: String) -> Bool {
+        guard let data = key.data(using: .utf8),
+              let jwk = try? JSONDecoder().decode(JWKPublicKey.self, from: data),
+              Data(base64URLEncoded: jwk.x) != nil,
+              Data(base64URLEncoded: jwk.y) != nil else {
+            return false
+        }
+        return true
     }
 
     // MARK: - Signature Verification Helper
