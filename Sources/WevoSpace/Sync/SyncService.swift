@@ -9,23 +9,35 @@ actor SyncService {
     let syncSecret: String?
     private let peerClient: any SyncPeerFetching
     private let verifier: any SignatureVerifier
-    private let pageSize = 500
+    private let pageSize: Int
+    // Per-peer, per-cycle bounds so a malicious/compromised peer that always returns full pages
+    // cannot spin pullFromPeer forever (starving other peers and exhausting CPU/DB/disk).
+    private let maxPagesPerCycle: Int
+    private let maxSecondsPerPeer: TimeInterval
 
-    init(app: Application, peers: [String], syncSecret: String?, verifier: any SignatureVerifier = P256SignatureVerifier()) {
+    init(app: Application, peers: [String], syncSecret: String?, verifier: any SignatureVerifier = P256SignatureVerifier(),
+         pageSize: Int = 500, maxPagesPerCycle: Int = 200, maxSecondsPerPeer: TimeInterval = 30) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = VaporSyncPeerClient(app: app, syncSecret: syncSecret)
         self.verifier = verifier
+        self.pageSize = pageSize
+        self.maxPagesPerCycle = maxPagesPerCycle
+        self.maxSecondsPerPeer = maxSecondsPerPeer
     }
 
     /// Initializer for testing: accepts injected SyncPeerFetching and SignatureVerifier implementations.
-    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching, verifier: any SignatureVerifier = P256SignatureVerifier()) {
+    init(app: Application, peers: [String], syncSecret: String?, peerClient: some SyncPeerFetching, verifier: any SignatureVerifier = P256SignatureVerifier(),
+         pageSize: Int = 500, maxPagesPerCycle: Int = 200, maxSecondsPerPeer: TimeInterval = 30) {
         self.app = app
         self.peers = peers
         self.syncSecret = syncSecret
         self.peerClient = peerClient
         self.verifier = verifier
+        self.pageSize = pageSize
+        self.maxPagesPerCycle = maxPagesPerCycle
+        self.maxSecondsPerPeer = maxSecondsPerPeer
     }
 
     func pullFromAllPeers() async {
@@ -51,9 +63,21 @@ actor SyncService {
 
         var offset = 0
         var totalMerged = 0
+        var pages = 0
+        var drained = false
+        var maxUpdatedAt: Date?
+        let deadline = syncStartedAt.addingTimeInterval(maxSecondsPerPeer)
 
         do {
             while true {
+                if pages >= maxPagesPerCycle {
+                    app.logger.warning("[Sync] \(peerURL): reached max pages (\(maxPagesPerCycle)) this cycle — resuming next cycle")
+                    break
+                }
+                if Date() > deadline {
+                    app.logger.warning("[Sync] \(peerURL): exceeded time budget (\(Int(maxSecondsPerPeer))s) this cycle — resuming next cycle")
+                    break
+                }
                 let page = try await peerClient.fetchProposes(
                     from: peerURL,
                     after: after,
@@ -62,10 +86,12 @@ actor SyncService {
                 )
                 for propose in page {
                     try await SyncService.upsertPropose(propose, on: app.db, logger: app.logger, verifier: self.verifier)
+                    if let u = propose.updatedAt, maxUpdatedAt == nil || u > maxUpdatedAt! { maxUpdatedAt = u }
                 }
                 totalMerged += page.count
+                pages += 1
                 // If fewer results than page size, we've reached the last page
-                if page.count < pageSize { break }
+                if page.count < pageSize { drained = true; break }
                 offset += pageSize
             }
         } catch {
@@ -74,14 +100,25 @@ actor SyncService {
             return
         }
 
-        // Persist checkpoint using start time so any Proposes created
-        // during this pull are captured in the next cycle
+        // Advance the checkpoint. On a full drain, use the pull start time (so proposes created
+        // during this pull are picked up next cycle). On an early break (hit the page/time cap),
+        // advance only to the newest record we actually processed — clamped to the start time so
+        // a peer cannot future-date `updatedAt` to make us skip ahead — so the remainder is
+        // resumed next cycle without being skipped and without re-pulling from scratch.
+        let newCheckpoint: Date
+        if drained {
+            newCheckpoint = syncStartedAt
+        } else if let m = maxUpdatedAt {
+            newCheckpoint = min(m, syncStartedAt)
+        } else {
+            newCheckpoint = checkpoint?.lastSyncAt ?? syncStartedAt
+        }
         do {
             if let existing = checkpoint {
-                existing.lastSyncAt = syncStartedAt
+                existing.lastSyncAt = newCheckpoint
                 try await existing.save(on: app.db)
             } else {
-                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: syncStartedAt).save(on: app.db)
+                try await SyncCheckpoint(peerURL: peerURL, lastSyncAt: newCheckpoint).save(on: app.db)
             }
         } catch {
             app.logger.error("[Sync] \(peerURL): failed to persist checkpoint — \(error)")
@@ -108,8 +145,18 @@ actor SyncService {
     private static func mergeInto(existing: Propose, incoming: ProposeResponse, on db: any Database, logger: Logger, verifier: any SignatureVerifier) async throws {
         var changed = false
         let idStr = incoming.id.uuidString
-        let hash = incoming.contentHash
-        let creatorKey = incoming.creatorPublicKey
+
+        // A propose's identity — creator key and content hash — is fixed at creation and bound by
+        // the creator signature. Never merge a record that disagrees on these (forgery or ID
+        // collision), and always derive signature messages from the LOCAL stored values so a peer
+        // cannot substitute a different creatorKey/hash to make its own signatures verify.
+        guard incoming.creatorPublicKey == existing.creatorPublicKey,
+              incoming.contentHash == existing.contentHash else {
+            logger.warning("[Sync] propose \(idStr): creatorPublicKey/contentHash mismatch — merge rejected")
+            return
+        }
+        let hash = existing.contentHash
+        let creatorKey = existing.creatorPublicKey
 
         // Verifies an incoming signature+timestamp pair against the local value.
         // Returns (sig, ts) to adopt when local is nil and the incoming signature is valid.
@@ -169,9 +216,10 @@ actor SyncService {
             changed = true
         }
 
-        if existing.dissolvedAt == nil, let v = incoming.dissolvedAt {
-            existing.dissolvedAt = v; changed = true
-        }
+        // NOTE: incoming.dissolvedAt is deliberately NOT adopted here. It is a peer-supplied
+        // string that previously drove the .dissolved status with no signature behind it. The
+        // dissolved state is now derived from verified dissolve signatures (see computeStatus),
+        // and dissolvedAt is recomputed from verified timestamps below (deriveDissolvedAt).
 
         if let a = adopt(
             localSig: existing.creatorDissolveSignature, localTs: existing.creatorDissolveTimestamp,
@@ -237,43 +285,21 @@ actor SyncService {
                     changed = true
                 }
             } else {
-                // Counterparty exists on peer but not locally — create and verify each signature
-                let cpKey = incomingCP.publicKey
-                let cpPrefix = String(cpKey.prefix(16))
-                let newCP = ProposeCounterparty(proposeID: try existing.requireID(), publicKey: cpKey)
-
-                func adoptNewCP(sig: String?, ts: String?, prefix: String, message: (String) -> String) -> (sig: String, ts: String)? {
-                    guard let sig, let ts else { return nil }
-                    let msg = message(ts)
-                    if verifier.verify(signature: sig, message: msg, publicKey: cpKey) { return (sig, ts) }
-                    logger.warning("[Sync] propose \(idStr): invalid \(prefix) for new counterparty \(cpPrefix) — rejected")
-                    return nil
-                }
-
-                if let a = adoptNewCP(sig: incomingCP.signSignature, ts: incomingCP.signTimestamp, prefix: "signSignature",
-                                      message: { ts in "signed.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.signSignature = a.sig; newCP.signTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.honorSignature, ts: incomingCP.honorTimestamp, prefix: "honorSignature",
-                                      message: { ts in "honored.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.honorSignature = a.sig; newCP.honorTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.partSignature, ts: incomingCP.partTimestamp, prefix: "partSignature",
-                                      message: { ts in "parted.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.partSignature = a.sig; newCP.partTimestamp = a.ts
-                }
-                if let a = adoptNewCP(sig: incomingCP.dissolveSignature, ts: incomingCP.dissolveTimestamp, prefix: "dissolveSignature",
-                                      message: { ts in "dissolved.\(idStr)\(hash)\(cpKey)\(ts)" }) {
-                    newCP.dissolveSignature = a.sig; newCP.dissolveTimestamp = a.ts
-                }
-
-                try await newCP.save(on: db)
-                existing.counterparties.append(newCP)
-                changed = true
+                // Counterparty present on the peer but not locally — REJECT it. The counterparty
+                // set is fixed at creation: the creator-signature message embeds the sorted
+                // counterparty keys (see createFrom / ProposeController.create), so a legitimate
+                // propose never gains members afterward. Accepting a peer-supplied member would let
+                // a rogue node inject an unsigned "phantom" counterparty (which breaks the
+                // allSatisfy checks in computeStatus and permanently downgrades honored/signed
+                // proposes back to .proposed) or a self-signed key (forging .parted/.dissolved on
+                // someone else's agreement). Membership is never re-bound to the creator signature
+                // here, so the only safe action is to skip.
+                logger.warning("[Sync] propose \(idStr): counterparty \(String(incomingCP.publicKey.prefix(16))) is not in the creator-signed set — rejected")
             }
         }
 
         if changed {
+            existing.dissolvedAt = deriveDissolvedAt(propose: existing, counterparties: existing.counterparties)
             existing.proposeStatus = computeStatus(propose: existing, counterparties: existing.counterparties)
             try await existing.save(on: db)
         }
@@ -283,6 +309,21 @@ actor SyncService {
         let idStr = incoming.id.uuidString
         let hash = incoming.contentHash
         let creatorKey = incoming.creatorPublicKey
+
+        // Reject oversized records so a peer cannot push a propose with tens of thousands of
+        // counterparties (storage/CPU amplification), matching the public create-path limit.
+        guard incoming.counterparties.count <= ProposeController.maxCounterparties else {
+            logger.warning("[Sync] propose \(idStr): too many counterparties (\(incoming.counterparties.count)) — skipped")
+            return
+        }
+
+        // Only accept signature schemes this build actually understands. Otherwise the
+        // peer-supplied signatureVersion would be stored unvalidated and the record verified
+        // against the wrong message format.
+        guard incoming.signatureVersion == 1 else {
+            logger.warning("[Sync] propose \(idStr): unsupported signatureVersion \(incoming.signatureVersion) — skipped")
+            return
+        }
 
         // Verify creation signature before persisting anything
         let sortedKeys = incoming.counterparties.map { $0.publicKey }.sorted().joined()
@@ -320,7 +361,7 @@ actor SyncService {
                                 message: { ts in "dissolved.\(idStr)\(hash)\(creatorKey)\(ts)" }, field: "creatorDissolveSignature") {
             propose.creatorDissolveSignature = a.sig; propose.creatorDissolveTimestamp = a.ts
         }
-        propose.dissolvedAt = incoming.dissolvedAt
+        // dissolvedAt is derived from verified dissolve signatures below, never copied from the peer.
 
         var counterparties: [ProposeCounterparty] = []
         for cp in incoming.counterparties {
@@ -354,6 +395,7 @@ actor SyncService {
             counterparties.append(counterparty)
         }
 
+        propose.dissolvedAt = deriveDissolvedAt(propose: propose, counterparties: counterparties)
         propose.proposeStatus = computeStatus(propose: propose, counterparties: counterparties)
         try await propose.save(on: db)
         for cp in counterparties {
@@ -372,13 +414,32 @@ actor SyncService {
         if propose.partCreatorSignature != nil || counterparties.contains(where: { $0.partSignature != nil }) {
             return .parted
         }
-        if propose.dissolvedAt != nil {
+        // Dissolved only when at least one VERIFIED dissolve signature is present. The previous
+        // `dissolvedAt != nil` test trusted a peer-supplied string with no signature behind it,
+        // letting any peer force a propose to .dissolved. dissolvedAt is now display-only.
+        if propose.creatorDissolveSignature != nil
+            || counterparties.contains(where: { $0.dissolveSignature != nil }) {
             return .dissolved
         }
         if !counterparties.isEmpty, counterparties.allSatisfy({ $0.signSignature != nil }) {
             return .signed
         }
         return .proposed
+    }
+
+    /// Derives dissolvedAt from VERIFIED dissolve signatures only (creator or any counterparty),
+    /// never from the peer-supplied dissolvedAt field. Dissolve signatures are only ever stored
+    /// after `verifier.verify` succeeds, so the associated timestamps are trustworthy for display.
+    /// Returns the earliest timestamp (ISO8601 strings sort chronologically), or nil if undissolved.
+    static func deriveDissolvedAt(propose: Propose, counterparties: [ProposeCounterparty]) -> String? {
+        var stamps: [String] = []
+        if propose.creatorDissolveSignature != nil, let ts = propose.creatorDissolveTimestamp {
+            stamps.append(ts)
+        }
+        for cp in counterparties where cp.dissolveSignature != nil {
+            if let ts = cp.dissolveTimestamp { stamps.append(ts) }
+        }
+        return stamps.min()
     }
 }
 

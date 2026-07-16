@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+# Branch protection for rc-* branches is handled by a standing repository
+# ruleset ("Protect RC branches", targeting refs/heads/rc-*), so this workflow
+# does not create per-branch rulesets and needs no administration permission.
 permissions:
   contents: write
 

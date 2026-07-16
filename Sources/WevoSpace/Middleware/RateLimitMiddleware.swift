@@ -24,15 +24,29 @@ actor RateLimitMiddleware: AsyncMiddleware {
     /// Time window in seconds.
     private let timeWindow: TimeInterval
 
-    /// Request history keyed by IP address.
+    /// Direct-peer IPs of trusted reverse proxies. The X-Forwarded-For / X-Real-IP headers are
+    /// honored ONLY when the request's transport peer is one of these. Otherwise those headers are
+    /// client-settable and would allow trivial rate-limit bypass and unbounded key growth.
+    private let trustedProxies: Set<String>
+
+    /// Hard upper bound on the number of distinct tracked client keys. Bounds memory even under a
+    /// key-rotation flood between cleanup cycles; when exceeded, the entry with the oldest window
+    /// is evicted before a new key is inserted.
+    private let maxTrackedKeys: Int
+
+    /// Request history keyed by client IP address.
     private var histories: [String: RequestHistory] = [:]
 
     /// - Parameters:
     ///   - requestLimit: Maximum requests allowed within the time window (default: 100)
     ///   - timeWindow: Length of the time window in seconds (default: 60)
-    init(requestLimit: Int = 100, timeWindow: TimeInterval = 60) {
+    ///   - trustedProxies: Direct-peer IPs whose forwarding headers may be trusted (default: none)
+    ///   - maxTrackedKeys: Upper bound on distinct tracked client keys (default: 50_000)
+    init(requestLimit: Int = 100, timeWindow: TimeInterval = 60, trustedProxies: Set<String> = [], maxTrackedKeys: Int = 50_000) {
         self.requestLimit = requestLimit
         self.timeWindow = timeWindow
+        self.trustedProxies = trustedProxies
+        self.maxTrackedKeys = maxTrackedKeys
     }
 
     /// Middleware responder.
@@ -83,6 +97,14 @@ actor RateLimitMiddleware: AsyncMiddleware {
     private func checkRateLimitAndGetInfo(for clientIP: String) async -> RateLimitInfo {
         let now = Date()
 
+        // Bound memory: if this is a brand-new key and we're at capacity, evict the entry with
+        // the oldest window before inserting. Cheap O(n) scan, only on the capacity boundary.
+        if histories[clientIP] == nil, histories.count >= maxTrackedKeys {
+            if let oldestKey = histories.min(by: { $0.value.windowStart < $1.value.windowStart })?.key {
+                histories.removeValue(forKey: oldestKey)
+            }
+        }
+
         // Retrieve existing history, or create a new one
         var history = histories[clientIP] ?? RequestHistory(timestamps: [], windowStart: now)
 
@@ -128,22 +150,27 @@ actor RateLimitMiddleware: AsyncMiddleware {
     /// - Parameter request: The incoming request
     /// - Returns: IP address, or nil if unavailable
     nonisolated private func getClientIP(from request: Request) -> String? {
-        // For proxied requests, read from X-Forwarded-For header
-        if let forwarded = request.headers.first(name: "X-Forwarded-For") {
-            // If multiple IPs are comma-separated, use the first one (client IP)
-            let ip = forwarded.split(separator: ",").first.map(String.init)?.trimmingCharacters(in: .whitespaces)
-            if let ip = ip, !ip.isEmpty {
-                return ip
+        let directPeer = request.remoteAddress?.ipAddress
+
+        // Only honor forwarding headers when the direct transport peer is a configured trusted
+        // proxy. Otherwise a client could spoof X-Forwarded-For / X-Real-IP to bypass the per-IP
+        // limit and mint unbounded distinct keys (memory exhaustion).
+        if let directPeer, trustedProxies.contains(directPeer) {
+            if let forwarded = request.headers.first(name: "X-Forwarded-For") {
+                // Take the right-most entry — the address the trusted proxy actually observed —
+                // rather than a client-prepended value.
+                let ip = forwarded.split(separator: ",").last.map(String.init)?.trimmingCharacters(in: .whitespaces)
+                if let ip, !ip.isEmpty {
+                    return ip
+                }
+            }
+            if let realIP = request.headers.first(name: "X-Real-IP")?.trimmingCharacters(in: .whitespaces), !realIP.isEmpty {
+                return realIP
             }
         }
 
-        // Check X-Real-IP header
-        if let realIP = request.headers.first(name: "X-Real-IP") {
-            return realIP
-        }
-
-        // For direct connections, read from remote address
-        return request.remoteAddress?.ipAddress
+        // Default: trust only the actual transport peer address.
+        return directPeer
     }
 
     /// Cleans up stale history entries (for memory management).
@@ -162,5 +189,33 @@ actor RateLimitMiddleware: AsyncMiddleware {
                 histories[ip] = RequestHistory(timestamps: validTimestamps, windowStart: windowStart)
             }
         }
+    }
+}
+
+/// Periodically invokes RateLimitMiddleware.cleanup() so its in-memory history map is reclaimed
+/// even for client keys that never recur. Without this the map only ever shrinks lazily per-IP,
+/// so a flood of distinct keys grows it without bound. Mirrors SyncScheduler's lifecycle pattern.
+final class RateLimitCleanupScheduler: LifecycleHandler {
+    private let middleware: RateLimitMiddleware
+    private let interval: TimeInterval
+    private nonisolated(unsafe) var task: Task<Void, Never>?
+
+    init(middleware: RateLimitMiddleware, interval: TimeInterval) {
+        self.middleware = middleware
+        self.interval = interval
+    }
+
+    func didBoot(_ application: Application) throws {
+        task = Task { [middleware, interval] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { break }
+                await middleware.cleanup()
+            }
+        }
+    }
+
+    func shutdown(_ application: Application) {
+        task?.cancel()
     }
 }
