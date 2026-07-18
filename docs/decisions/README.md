@@ -1,0 +1,24 @@
+# Decisions
+
+This directory records significant design and architecture decisions for WevoSpace —
+things worth writing down so future readers know *why*, not just *what*. Each entry
+uses a simple format: Status, Context, Decision, Consequences.
+
+Decisions that affect the wire protocol or client compatibility must be mirrored by
+a matching entry in the [`wevo`](https://www.github.com/h1d3mun3/wevo) client
+repository's `docs/decisions/`, cross-referencing each other by number and title.
+
+## Index
+
+| # | Title | Status |
+|---|-------|--------|
+| [0001](0001-forward-and-backward-compatibility-requirement.md) | Forward and Backward Compatibility Are a Hard Requirement | Accepted |
+| [0002](0002-versioning-and-backward-compatibility.md) | Versioning and Backward Compatibility Policy | Accepted |
+
+## Adding a new decision
+
+1. Copy the format of an existing entry.
+2. Number sequentially (`000N-kebab-case-title.md`).
+3. If the decision affects the client-server protocol or signed message format,
+   add a matching entry in `wevo`'s `docs/decisions/` and link the two.
+4. Add a row to the index table above.
