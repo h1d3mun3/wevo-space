@@ -125,6 +125,14 @@ Full documentation:
 - The server verifies signatures but does not store private keys
 - Rate limiting: 60 requests/minute per IP (`X-RateLimit-*` headers on responses)
 
+## Known Limitations
+
+### Timestamps are not cryptographically verified
+
+Timestamps are included in the signed message, so they cannot be altered after signing. However, the value is asserted by the signing client — the server does not verify it against a trusted time source. A client with a manipulated clock can submit an arbitrary timestamp that passes signature verification.
+
+The standard remedy (RFC 3161 trusted timestamp authority) would introduce an external dependency that conflicts with Wevo's design principle of not relying on third-party infrastructure. This is a known design trade-off. Any future time-based feature (e.g., expiry) must account for this.
+
 ## Getting Started
 
 ### Prerequisites
